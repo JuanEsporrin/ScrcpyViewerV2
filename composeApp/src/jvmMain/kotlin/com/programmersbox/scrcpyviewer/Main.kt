@@ -12,6 +12,8 @@ import com.programmersbox.scrcpyviewer.ui.App
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesViewModel
 import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsViewModel
+import com.programmersbox.scrcpyviewer.ui.settings.SettingsViewModel
+import com.programmersbox.scrcpyviewer.ui.settings.parseAdbVersion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -43,6 +45,17 @@ class AppGraph {
     val presetsViewModel = PresetsViewModel(
         presetStore, deviceOptions, devicesViewModel.selectedSerial,
         deviceLabel = { serial -> devicesViewModel.state.value.devices.firstOrNull { it.serial == serial }?.let(::deviceTitle) ?: serial },
+        scope = scope,
+    )
+
+    val settingsViewModel = SettingsViewModel(
+        settings, presetStore,
+        bundledAdb = bundledTools::adbExecutable,
+        adbVersion = { path ->
+            val result = AdbClient(adbPath = { path }).exec("version")
+            if (result.exitCode == 0) parseAdbVersion(result.stdout) else null
+        },
+        restartTracker = deviceTracker::restart,
         scope = scope,
     )
 

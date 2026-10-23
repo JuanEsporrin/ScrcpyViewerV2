@@ -2,10 +2,14 @@ package com.programmersbox.scrcpyviewer.adb
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 
 private const val INFO_COMMAND = "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk"
@@ -31,8 +35,22 @@ class DeviceTracker(
     private val infoCache = HashMap<Key, DeviceInfo>()
     private val inFlight = HashSet<Key>()
 
+    private var job: Job
+
     init {
-        scope.launch { run() }
+        job = scope.launch { run() }
+    }
+
+    /** Drops the current connection and device list, then starts tracking again (e.g. after the adb path changed). */
+    fun restart() {
+        synchronized(lock) {
+            val old = job
+            job = scope.launch {
+                old.cancelAndJoin()
+                reset()
+                run()
+            }
+        }
     }
 
     private suspend fun run() {
@@ -47,7 +65,8 @@ class DeviceTracker(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // fall through to the reconnect path
+                // A cancelled collector can surface as an IOException from the closed socket; stop instead of reconnecting.
+                currentCoroutineContext().ensureActive()
             }
             reset()
             try {

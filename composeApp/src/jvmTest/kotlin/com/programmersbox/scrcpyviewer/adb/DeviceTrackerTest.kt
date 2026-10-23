@@ -120,4 +120,19 @@ class DeviceTrackerTest {
         Thread.sleep(200)
         assertEquals(1, client.shellCalls.get())
     }
+
+    @Test
+    fun `restart reconnects and drops the old stream`() = runBlocking {
+        serve(
+            { s -> send(s, "OKAY" + frame(one)); Thread.sleep(3000) },
+            { s -> send(s, "OKAY" + frame(two)); Thread.sleep(3000) },
+        )
+        val client = FakeClient(server.localPort)
+        val tracker = DeviceTracker(client, scope)
+        withTimeout(5000) { tracker.devices.first { it.size == 1 } }
+        tracker.restart()
+        withTimeout(5000) { tracker.devices.first { it.size == 2 } }
+        assertTrue(tracker.connected.value)
+        assertEquals(0, client.startServerCalls.get(), "restart is not a failure reconnect")
+    }
 }
