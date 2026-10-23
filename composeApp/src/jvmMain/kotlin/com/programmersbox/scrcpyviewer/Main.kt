@@ -1,9 +1,22 @@
 package com.programmersbox.scrcpyviewer
 
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
+import com.programmersbox.scrcpyviewer.media.VideoDecoder
+import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
+import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
+import com.programmersbox.scrcpyviewer.ui.mirror.MirrorController
+import com.programmersbox.scrcpyviewer.ui.mirror.MirrorWindow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.AppSettings
 import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
@@ -61,13 +74,49 @@ class AppGraph {
 
     /** The device currently selected on the Devices screen. */
     val selectedSerial: StateFlow<String?> get() = devicesViewModel.selectedSerial
+
+    val serverLauncher = ServerLauncher(adbClient, bundledTools)
+
+    /** Open mirror sessions; they run on [scope], so they live until their window or the app is closed. */
+    val mirrorController = MirrorController(
+        scope = scope,
+        devices = deviceTracker.devices,
+        optionsFor = { serial -> deviceOptions.workingSet(serial).value.values },
+        newSession = { serial, values ->
+            ScrcpySession(
+                serial, values, serverLauncher,
+                decoderFactory = { meta, session -> VideoDecoder(meta.codecId, session::publishFrame, session::publishFps) },
+                audioFactory = { _, _ -> null }, // audio playback: Task 13
+                scope = scope,
+            )
+        },
+        setClipboard = { text -> Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) },
+    )
+
+    init {
+        scope.launch { mirrorRequests.collect { mirrorController.open(it) } }
+    }
 }
 
 fun main() {
     val graph = AppGraph()
     application {
-        Window(onCloseRequest = ::exitApplication, title = "Scrcpy Viewer") {
+        val settings by graph.settings.settings.collectAsState()
+        val mirrors by graph.mirrorController.open.collectAsState()
+        Window(
+            onCloseRequest = {
+                // Stop every server (and remove its tunnel) before leaving.
+                runBlocking { withTimeoutOrNull(5_000) { graph.mirrorController.closeAll() } }
+                exitApplication()
+            },
+            title = "Scrcpy Viewer",
+        ) {
             App(graph)
+        }
+        for ((serial, session) in mirrors) {
+            key(serial) {
+                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode)
+            }
         }
     }
 }

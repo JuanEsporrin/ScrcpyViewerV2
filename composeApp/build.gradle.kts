@@ -127,8 +127,20 @@ tasks.matching { it.name == "run" }.configureEach {
 }
 
 // Offscreen screenshot tests are slow; run them only with -Pscreenshots.
+// Real-device tests (*DeviceTest) need attached devices; run them only with -PdeviceTests.
 tasks.matching { it.name == "jvmTest" }.configureEach {
+    val screenshots = project.hasProperty("screenshots")
+    val deviceTests = project.hasProperty("deviceTests")
     (this as Test).filter {
-        if (project.hasProperty("screenshots")) includeTestsMatching("*ScreenshotTest") else excludeTestsMatching("*ScreenshotTest")
+        if (screenshots) includeTestsMatching("*ScreenshotTest")
+        if (deviceTests) includeTestsMatching("*DeviceTest")
+        if (!screenshots) excludeTestsMatching("*ScreenshotTest")
+        if (!deviceTests) excludeTestsMatching("*DeviceTest")
+    }
+    if (deviceTests) {
+        systemProperty("scrcpyviewer.bundledDir", layout.projectDirectory.dir("bundled").asFile.absolutePath)
+        project.findProperty("deviceSerials")?.let { systemProperty("scrcpyviewer.deviceSerials", it.toString()) }
+        testLogging { showStandardStreams = true }
+        outputs.upToDateWhen { false }
     }
 }
