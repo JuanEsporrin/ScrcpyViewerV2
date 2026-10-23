@@ -10,6 +10,8 @@ import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
 import com.programmersbox.scrcpyviewer.tools.BundledTools
 import com.programmersbox.scrcpyviewer.ui.App
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesViewModel
+import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
+import com.programmersbox.scrcpyviewer.ui.presets.PresetsViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +38,12 @@ class AppGraph {
 
     val devicesViewModel = DevicesViewModel(
         deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests,
+    )
+
+    val presetsViewModel = PresetsViewModel(
+        presetStore, deviceOptions, devicesViewModel.selectedSerial,
+        deviceLabel = { serial -> devicesViewModel.state.value.devices.firstOrNull { it.serial == serial }?.let(::deviceTitle) ?: serial },
+        scope = scope,
     )
 
     /** The device currently selected on the Devices screen. */

@@ -157,13 +157,6 @@ class DevicesViewModel(
     private fun canMirror(devices: List<Device>, serial: String?, errors: Map<String, String>): Boolean =
         serial != null && errors.isEmpty() && devices.firstOrNull { it.serial == serial }?.state == DeviceState.Device
 
-    private fun initialValue(spec: OptionSpec): String? = when (val type = spec.type) {
-        OptionType.Flag -> null
-        is OptionType.Choice -> type.values.first()
-        is OptionType.OptionalValue -> null
-        else -> ""
-    }
-
     private fun filterOptions(query: String, group: OptionGroup?): List<OptionSpec> {
         val q = query.trim()
         return OptionCatalog.all.filter { spec ->
@@ -190,3 +183,11 @@ fun deviceTitle(device: Device): String =
     device.info?.model?.takeIf { it.isNotBlank() }
         ?: device.model?.takeIf { it.isNotBlank() }?.replace('_', ' ')
         ?: device.serial
+
+/** The value a freshly checked option starts with: null for flags and optional values, the first choice, else empty text. */
+fun initialValue(spec: OptionSpec): String? = when (val type = spec.type) {
+    OptionType.Flag -> null
+    is OptionType.Choice -> type.values.first()
+    is OptionType.OptionalValue -> null
+    else -> ""
+}

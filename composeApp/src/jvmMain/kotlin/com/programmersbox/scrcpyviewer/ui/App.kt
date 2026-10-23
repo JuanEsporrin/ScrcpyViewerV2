@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.AppGraph
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
+import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
+import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 
 private enum class Destination(val label: String, val icon: ImageVector) {
@@ -43,6 +45,7 @@ private enum class Destination(val label: String, val icon: ImageVector) {
 fun App(graph: AppGraph) {
     val settings by graph.settings.settings.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    val fileDialogs = remember { AwtPresetFileDialogs() }
     ScrcpyViewerTheme(settings.themeMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             var selected by rememberSaveable { mutableStateOf(Destination.Devices) }
@@ -61,6 +64,7 @@ fun App(graph: AppGraph) {
                 Box(Modifier.fillMaxSize()) {
                     when (selected) {
                         Destination.Devices -> DevicesScreen(graph.devicesViewModel)
+                        Destination.Presets -> PresetsScreen(graph.presetsViewModel, fileDialogs)
                         else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(selected.label) }
                     }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
