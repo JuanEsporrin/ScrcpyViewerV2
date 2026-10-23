@@ -5,9 +5,14 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.nio.file.Files
+import kotlin.concurrent.thread
 import java.nio.file.Path
 import kotlin.test.Test
+import kotlin.test.assertNull
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -63,5 +68,35 @@ class AdbClientTest {
         job.cancel()
         job.join()
         assertTrue((System.nanoTime() - start) / 1_000_000 < 2000)
+    }
+
+    @Test
+    fun `execWithTimeout gives up on a hung adb`() = runBlocking {
+        val adb = stub("exec sleep 5")
+        val start = System.nanoTime()
+        assertNull(AdbClient({ adb }).execWithTimeout(300, "x"))
+        assertTrue((System.nanoTime() - start) / 1_000_000 < 2000)
+        assertEquals(ProcessResult(0, "ok\n", ""), AdbClient({ stub("echo ok") }).execWithTimeout(5_000, "x"))
+    }
+
+    @Test
+    fun `shell times out when the device never answers`() = runBlocking {
+        // A fake adb server: OKAY for the transport and the shell request, then silence.
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
+            val accepted = thread(isDaemon = true) {
+                runCatching {
+                    server.accept().use { s ->
+                        s.getOutputStream().write("OKAYOKAY".toByteArray())
+                        s.getOutputStream().flush()
+                        Thread.sleep(5_000)
+                    }
+                }
+            }
+            val client = AdbClient({ error("no binary") }, port = server.localPort, shellReadTimeoutMs = 300)
+            val start = System.nanoTime()
+            assertFailsWith<SocketTimeoutException> { client.shell("SER", "getprop") }
+            assertTrue((System.nanoTime() - start) / 1_000_000 < 3000)
+            accepted.interrupt()
+        }
     }
 }

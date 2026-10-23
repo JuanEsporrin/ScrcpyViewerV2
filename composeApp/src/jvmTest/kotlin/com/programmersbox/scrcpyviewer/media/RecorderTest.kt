@@ -10,6 +10,7 @@ import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
 import com.programmersbox.scrcpyviewer.scrcpy.TestLogs
 import com.programmersbox.scrcpyviewer.scrcpy.VideoCodecMeta
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -321,6 +322,25 @@ class RecorderTest {
         val info = probe(file)
         assertEquals(320, info.streams.single().width)
         assertTrue(abs(info.durationSeconds - 0.5) < 0.05, "duration ${info.durationSeconds}")
+    }
+
+    @Test
+    fun `teardown finishes the recording before the tunnel and server cleanup`() = runBlocking {
+        val file = dir.resolve("order.mp4")
+        var session: ScrcpySession? = null
+        val unfinishedAtCleanup = CompletableDeferred<Boolean>()
+        val launcher = LocalPairLauncher(video = true, audio = false, control = false, onCleanup = {
+            unfinishedAtCleanup.complete(session!!.hasUnfinishedRecording)
+        })
+        val s = session(launcher, mapOf("record" to file.toString()))
+        session = s
+        s.awaitRunning()
+        videoOut(launcher).sendFrames(loadH264Sample(), startUs = 0)
+        delay(300)
+        assertTrue(s.hasUnfinishedRecording)
+        withTimeout(15_000) { s.close() }
+        assertFalse(unfinishedAtCleanup.await(), "the recorder had finished when cleanup ran")
+        assertEquals(RecordResult.Saved(file), withTimeout(5_000) { s.recordingResults.first() })
     }
 
     @Test

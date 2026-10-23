@@ -33,6 +33,8 @@ class LocalPairLauncher(
     private val video: Boolean = true,
     private val audio: Boolean = false,
     private val control: Boolean = true,
+    /** Runs at the start of [ServerConnection.cleanup]. */
+    private val onCleanup: () -> Unit = {},
 ) : ConnectionStarter {
     val device = CompletableDeferred<DeviceEnds>()
     @Volatile var cleanups = 0
@@ -49,6 +51,7 @@ class LocalPairLauncher(
             val (c, dc) = pair(control)
             device.complete(DeviceEnds(dv, da, dc))
             ServerConnection(v, a, c, DeviceMeta("Fake"), FakeProcess()) {
+                onCleanup()
                 cleanups++
                 listOfNotNull(v, a, c).forEach { it.close() }
             }

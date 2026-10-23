@@ -94,7 +94,9 @@ class Recorder(
         validate(format, video, audioCodecId, orientation)
         thread = Thread(::run, "recorder").apply {
             priority = Thread.MIN_PRIORITY // recording is a background task
-            isDaemon = false // the JVM waits for the trailer
+            // Non-daemon, so the JVM does not stop it when the last other thread ends; System.exit() (and
+            // exitProcess) still kills it mid-file. The app's shutdown joins the recorders before exiting.
+            isDaemon = false
             start()
         }
     }

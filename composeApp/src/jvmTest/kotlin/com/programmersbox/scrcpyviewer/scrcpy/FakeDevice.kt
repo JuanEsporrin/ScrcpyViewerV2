@@ -3,6 +3,7 @@ package com.programmersbox.scrcpyviewer.scrcpy
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.ProcessResult
 import com.programmersbox.scrcpyviewer.tools.BundledTools
+import kotlinx.coroutines.awaitCancellation
 import java.io.ByteArrayInputStream
 import java.io.DataOutputStream
 import java.io.InputStream
@@ -56,6 +57,8 @@ class FakeAdb(
     private val reverseFails: Boolean = false,
     private val deviceConnects: Boolean = true,
     private val deviceName: String = "Pixel 8",
+    /** `adb reverse/forward --remove` never returns (a hung adb). */
+    private val removeHangs: Boolean = false,
 ) : AdbClient(adbPath = { error("no real adb in tests") }) {
     val calls = CopyOnWriteArrayList<List<String>>()
     /** Device-side sockets in stream order (video, audio, control minus disabled ones). */
@@ -70,6 +73,7 @@ class FakeAdb(
         val a = args.toList()
         calls += a
         val cmd = a.getOrNull(2)
+        if (removeHangs && (cmd == "reverse" || cmd == "forward") && a[3] == "--remove") awaitCancellation()
         if (cmd == "reverse" && a[3] != "--remove") {
             if (reverseFails) return ProcessResult(1, "", "error: more than one device/emulator")
             reversePort = a[4].removePrefix("tcp:").toInt()

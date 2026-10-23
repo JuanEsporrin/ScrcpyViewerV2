@@ -144,6 +144,20 @@ class ServerLauncherTest {
     }
 
     @Test
+    fun `cleanup gives up on a hung adb reverse --remove`() = runBlocking {
+        val adb = FakeAdb(deviceConnects = false, removeHangs = true)
+        val launcher = ServerLauncher(adb, fakeTools(), stopTimeoutMs = 100, cleanupAdbTimeoutMs = 300)
+        val start = CoroutineScope(Dispatchers.IO).async { launcher.start(serial, OptionValues(emptyMap())) }
+        withTimeout(5_000) { while (adb.processes.isEmpty()) delay(10) }
+        adb.processes.single().exit(1)
+        val t0 = System.nanoTime()
+        // Without the bound, cleanup would wait on the hung adb forever and start would never fail.
+        assertFailsWith<IOException> { withTimeout(5_000) { start.await() } }
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 3_000)
+        assertTrue(adb.calls.indexOfCmd("reverse", "--remove") >= 0)
+    }
+
+    @Test
     fun `cancelling start while waiting for the device cleans up`() = runBlocking {
         val adb = FakeAdb(deviceConnects = false)
         val start = CoroutineScope(Dispatchers.IO).async { launcher(adb).start(serial, OptionValues(emptyMap())) }

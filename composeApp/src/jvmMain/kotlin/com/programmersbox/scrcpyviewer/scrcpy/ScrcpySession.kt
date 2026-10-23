@@ -75,7 +75,8 @@ data class RecordingInfo(val file: Path, val startedNanos: Long)
  * that throws is logged, closed and removed; the session keeps going.
  *
  * Any reader hitting EOF or an I/O error (or the control writer failing) sets [SessionStatus.Disconnected] and tears
- * the session down once: readers stop, [ServerConnection.cleanup] runs, sinks are closed. A launch failure sets
+ * the session down once: the sockets close and the readers stop, sinks are closed, recorders finish their files,
+ * then [ServerConnection.cleanup] runs. A launch failure sets
  * [SessionStatus.Failed]. Nothing thrown inside escapes to [scope]: the session runs in its own [SupervisorJob]
  * (a child of [scope]'s job) with a [CoroutineExceptionHandler].
  *
@@ -157,6 +158,9 @@ class ScrcpySession(
     private val _recording = MutableStateFlow<RecordingInfo?>(null)
     /** The recording in progress, or null. */
     val recording: StateFlow<RecordingInfo?> = _recording.asStateFlow()
+
+    /** A started recording has not finished its file yet (it may be stopping in the background). */
+    val hasUnfinishedRecording: Boolean get() = unfinishedRecordings.isNotEmpty()
     private val recordingResultChannel = Channel<RecordResult>(Channel.UNLIMITED)
     /** How each recording ended (saved, or the error), for one collector. */
     val recordingResults: Flow<RecordResult> = recordingResultChannel.receiveAsFlow()
@@ -512,12 +516,17 @@ class ScrcpySession(
         sessionScope.launch(start = CoroutineStart.ATOMIC) { teardown() }
     }
 
-    /** Runs exactly once (guarded by [tornDown]). */
+    /**
+     * Runs exactly once (guarded by [tornDown]). Order matters for recordings: the sockets are closed (which
+     * unblocks the readers) and the recorders finish their files before [ServerConnection.cleanup], whose adb
+     * calls and server wait may take seconds.
+     */
     private suspend fun teardown() = withContext(NonCancellable) {
         try {
             controlQueue.close()
             connectJob.cancelAndJoin()
-            connection?.cleanup() // closing the sockets unblocks the readers
+            val conn = connection
+            conn?.let { listOfNotNull(it.video, it.audio, it.control).forEach { s -> runCatching { s.close() } } }
             streamsJob.cancelAndJoin()
             synchronized(videoLock) {
                 videoSinks.forEach { runCatching { it.close() } }
@@ -538,6 +547,7 @@ class ScrcpySession(
                     log.log(System.Logger.Level.WARNING, "Recorder of $serial still writing ${rec.file}")
                 }
             }
+            conn?.cleanup() // tunnel, server process
         } finally {
             cancelGuard.cancel()
             teardownDone.complete(Unit)

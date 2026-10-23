@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -25,15 +26,21 @@ open class AdbClient(
     private val host: String = "127.0.0.1",
     private val port: Int = 5037,
     private val startServerTimeoutMs: Long = 10_000,
+    /** Socket read timeout of [shell]: a hung device fails the call instead of blocking it forever. */
+    private val shellReadTimeoutMs: Int = 10_000,
 ) {
     open suspend fun startServer() {
         val result = runAdb(listOf("start-server"), startServerTimeoutMs)
         if (result.exitCode != 0) throw IOException("adb start-server failed (${result.exitCode}): ${result.stderr.trim()}")
     }
 
-    /** Runs `shell:<cmd>` on [serial] and returns its output. */
+    /**
+     * Runs `shell:<cmd>` on [serial] and returns its output. Throws [java.net.SocketTimeoutException] when the adb
+     * server sends nothing for [shellReadTimeoutMs].
+     */
     open suspend fun shell(serial: String, cmd: String): String = withContext(Dispatchers.IO) {
         openSocket().use { socket ->
+            socket.soTimeout = shellReadTimeoutMs
             val out = socket.getOutputStream()
             val input = socket.getInputStream()
             out.write(AdbWire.encodeRequest("host:transport:$serial"))
@@ -48,6 +55,10 @@ open class AdbClient(
 
     /** Runs the adb binary with [args] (push, reverse, forward...). Cancellable; no time limit. */
     open suspend fun exec(vararg args: String): ProcessResult = runAdb(args.toList(), null)
+
+    /** [exec] bounded by [timeoutMs]: null when it timed out (the adb process is then destroyed). */
+    suspend fun execWithTimeout(timeoutMs: Long, vararg args: String): ProcessResult? =
+        withTimeoutOrNull(timeoutMs) { exec(*args) }
 
     /**
      * Starts the adb binary with [args] as a long-running process (the scrcpy server's `adb shell`). stdin is

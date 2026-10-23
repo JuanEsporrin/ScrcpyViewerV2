@@ -113,6 +113,8 @@ class ServerLauncher(
     private val connectDelayMs: Long = 100,
     /** How long cleanup waits for the server to exit after closing the sockets before killing it (server.c: 1 s). */
     private val stopTimeoutMs: Long = 1_000,
+    /** Bound of each `adb reverse/forward --remove` run by cleanup, so a hung adb cannot stall a teardown. */
+    private val cleanupAdbTimeoutMs: Long = 3_000,
     /** Opens the reverse-tunnel listener on a local port (a seam for tests). */
     private val listen: (port: Int) -> ServerSocket = ::listenLoopback,
 ) : ConnectionStarter {
@@ -239,11 +241,15 @@ class ServerLauncher(
 
         suspend fun closeTunnel() {
             if (!tunnelOpen.compareAndSet(true, false)) return
-            if (forward) {
-                runCatching { adb.exec("-s", serial, "forward", "--remove", "tcp:$port") }
+            val args = if (forward) {
+                arrayOf("-s", serial, "forward", "--remove", "tcp:$port")
             } else {
-                runCatching { adb.exec("-s", serial, "reverse", "--remove", "localabstract:$socketName") }
                 runCatching { serverSocket?.close() }
+                arrayOf("-s", serial, "reverse", "--remove", "localabstract:$socketName")
+            }
+            val r = runCatching { adb.execWithTimeout(cleanupAdbTimeoutMs, *args) }
+            if (r.isSuccess && r.getOrNull() == null) {
+                log.log(System.Logger.Level.WARNING, "adb ${args.drop(2).joinToString(" ")} timed out after $cleanupAdbTimeoutMs ms")
             }
         }
 
