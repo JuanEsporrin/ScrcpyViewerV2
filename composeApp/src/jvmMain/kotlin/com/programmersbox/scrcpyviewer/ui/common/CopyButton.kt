@@ -40,6 +40,6 @@ fun CopyButton(text: () -> String, label: String = "Copy", modifier: Modifier = 
         modifier = modifier,
     ) {
         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-        Text(label, modifier = Modifier.padding(start = 6.dp))
+        Text(label, modifier = Modifier.padding(start = 6.dp), maxLines = 1, softWrap = false)
     }
 }

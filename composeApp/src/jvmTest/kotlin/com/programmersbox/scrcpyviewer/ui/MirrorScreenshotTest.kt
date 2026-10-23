@@ -69,13 +69,14 @@ class MirrorScreenshotTest {
         codec = "H.264",
         bitRate = "8 Mbps",
         fps = 59.8,
+        fittedScale = 0.37f,
         command = "scrcpy -s 39121FDJH004AB --max-size=1920",
     )
 
-    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state, clickIndicator: ClickIndicator? = null) {
+    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state, clickIndicator: ClickIndicator? = null, width: Int = 1280, height: Int = 800) {
         val out = outDir.resolve(name)
         val frame = mutableStateOf<VideoFrame?>(syntheticFrame())
-        renderToPng(1280, 800, out) {
+        renderToPng(width, height, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                     MirrorContent(state, frame, {}, {}, {}, {}, {}, {}, clickIndicator = clickIndicator)
@@ -121,4 +122,35 @@ class MirrorScreenshotTest {
         val dots = ClickIndicator(mapper::displayedRect).apply { press(Offset(560f, 120f)) }
         render("mirror-show-touches.png", ThemeMode.Light, clickIndicator = dots)
     }
+
+    @Test
+    fun `mirror narrow 320`() = render("mirror-narrow-320x700.png", ThemeMode.Light, width = 320, height = 700)
+
+    @Test
+    fun `mirror narrow 420`() = render("mirror-narrow-420x800.png", ThemeMode.Light, width = 420, height = 800)
+
+    @Test
+    fun `mirror narrow 560`() = render("mirror-narrow-560x900.png", ThemeMode.Light, width = 560, height = 900)
+
+    @Test
+    fun `mirror narrow 640`() = render("mirror-narrow-640x900.png", ThemeMode.Light, width = 640, height = 900)
+
+    @Test
+    fun `mirror narrow 700`() = render("mirror-narrow-700x900.png", ThemeMode.Light, width = 700, height = 900)
+
+    @Test
+    fun `mirror narrow 760`() = render("mirror-narrow-760x900.png", ThemeMode.Light, width = 760, height = 900)
+
+    @Test
+    fun `mirror narrow 420 long model dark`() = render(
+        "mirror-narrow-420x800-long-dark.png", ThemeMode.Dark,
+        state.copy(model = "Samsung Galaxy S24 Ultra (SM-S928U1)", recordingLabel = "● REC 01:23", audioNote = "No audio from device"),
+        width = 420, height = 800,
+    )
+
+    @Test
+    fun `mirror zoom 200`() = render("mirror-zoom-200.png", ThemeMode.Light, state.copy(zoom = 2f))
+
+    @Test
+    fun `mirror zoom 50`() = render("mirror-zoom-50.png", ThemeMode.Light, state.copy(zoom = 0.5f))
 }

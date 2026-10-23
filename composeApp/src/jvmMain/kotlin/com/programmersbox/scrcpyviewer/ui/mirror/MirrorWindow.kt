@@ -2,6 +2,19 @@ package com.programmersbox.scrcpyviewer.ui.mirror
 
 import com.programmersbox.scrcpyviewer.Os
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.text.style.TextOverflow
+import java.awt.datatransfer.StringSelection
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.HorizontalScrollbar
 import androidx.compose.foundation.TooltipArea
@@ -158,7 +171,10 @@ data class MirrorUiState(
     val codec: String = "H.264",
     val bitRate: String = "8 Mbps",
     val fps: Double = 0.0,
-    val fit: Boolean = true,
+    /** Zoom of the image (1 = one frame pixel per screen pixel); null is "Fit to window". */
+    val zoom: Float? = null,
+    /** On-screen scale of the image while fitted, for the percent label and the first zoom step. */
+    val fittedScale: Float = 1f,
     val stretch: Boolean = false,
     val canReconnect: Boolean = false,
     val command: String = "scrcpy",
@@ -176,7 +192,9 @@ data class MirrorUiState(
     val recordingLabel: String? = null,
     /** `display-orientation`: how the frame is turned on screen. */
     val orientation: DisplayOrientation = DisplayOrientation.R0,
-)
+) {
+    val fit: Boolean get() = zoom == null
+}
 
 /** Milliseconds on the monotonic clock the click dots use. */
 internal fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
@@ -331,7 +349,9 @@ fun MirrorWindow(
     // The window is sized for the image as displayed (turned by display-orientation).
     val displayedSize = frameSize?.let(orientation::orientedSize)
     val renderFit = e["render-fit"]
-    var fit by remember { mutableStateOf(renderFit != "unscaled") }
+    // Per window, not persisted: null is Fit, else the scale (1 = 100 %).
+    var zoom by remember { mutableStateOf<Float?>(if (renderFit == "unscaled") 1f else null) }
+    val fit = zoom == null
     val stretch = renderFit == "stretched"
     val aspectLock = "no-window-aspect-ratio-lock" !in e
     val explicitSize = e["window-width"]?.toIntOrNull()?.takeIf { it > 0 } != null ||
@@ -367,6 +387,13 @@ fun MirrorWindow(
         )
     }
     val send: (List<ControlMessage>) -> Unit = { msgs -> msgs.forEach(session::send) }
+    fun fittedScale(): Float {
+        val oriented = frameSize?.let(orientation::orientedSize) ?: return 1f
+        val rect = mapper.displayedRect() ?: return 1f
+        return if (oriented.width > 0) rect.width / oriented.width else 1f
+    }
+    val applyZoom: (ZoomCommand) -> Unit = { zoom = Zoom.step(zoom, fittedScale(), it) }
+    val currentApplyZoom by rememberUpdatedState(applyZoom)
     // Set by the window's focus listener; the AWT window only exists inside Window {} below.
     var windowFocused by remember { mutableStateOf(false) }
     var awtWindowRef by remember { mutableStateOf<java.awt.Window?>(null) }
@@ -421,7 +448,8 @@ fun MirrorWindow(
         codec = codecLabel(e["video-codec"]),
         bitRate = bitRateLabel(e["video-bit-rate"]),
         fps = fps,
-        fit = fit,
+        zoom = zoom,
+        fittedScale = fittedScale(),
         stretch = stretch,
         canReconnect = serial in reconnectable,
         command = CommandLine.build(serial, values),
@@ -454,9 +482,25 @@ fun MirrorWindow(
         DisposableEffect(session) {
             val paste = if (Os.isMac) AwtKeyEvent.META_DOWN_MASK else AwtKeyEvent.CTRL_DOWN_MASK
             var pasteDown = false
+            // Keys of a handled zoom shortcut: their key-up and typed events are swallowed too.
+            val zoomKeys = mutableSetOf<Int>()
             val dispatcher = KeyEventDispatcher { ev ->
                 val inWindow = ev.component === awtWindow || SwingUtilities.getWindowAncestor(ev.component) === awtWindow
-                if (!inWindow || "no-control" in e) return@KeyEventDispatcher false
+                if (!inWindow) return@KeyEventDispatcher false
+                // Zoom shortcuts belong to the window: never forwarded to the device (any keyboard mode).
+                if (ev.id == AwtKeyEvent.KEY_PRESSED) {
+                    Zoom.shortcut(ev.keyCode, ev.modifiersEx, Os.isMac)?.let {
+                        zoomKeys += ev.keyCode
+                        currentApplyZoom(it)
+                        return@KeyEventDispatcher true
+                    }
+                }
+                if (zoomKeys.isNotEmpty()) {
+                    if (ev.id == AwtKeyEvent.KEY_RELEASED && zoomKeys.remove(ev.keyCode)) return@KeyEventDispatcher true
+                    if (ev.id == AwtKeyEvent.KEY_TYPED && ev.modifiersEx and (AwtKeyEvent.META_DOWN_MASK or AwtKeyEvent.CTRL_DOWN_MASK) != 0) return@KeyEventDispatcher true
+                    if (ev.id == AwtKeyEvent.KEY_PRESSED && ev.keyCode in zoomKeys) return@KeyEventDispatcher true
+                }
+                if ("no-control" in e) return@KeyEventDispatcher false
                 if (capture != null && capture.key(ev.id, ev.keyCode, ev.keyLocation)) return@KeyEventDispatcher true
                 if (e["keyboard"] == "disabled") return@KeyEventDispatcher false
                 if (ev.keyCode == AwtKeyEvent.VK_V && ev.modifiersEx and paste != 0 && ev.id == AwtKeyEvent.KEY_PRESSED) {
@@ -547,7 +591,7 @@ fun MirrorWindow(
                         state = state,
                         frame = frame,
                         latestFrame = { session.frames.value },
-                        onFitChange = { fit = it },
+                        onZoom = applyZoom,
                         onAction = { action ->
                             when (action) {
                                 MirrorAction.Screenshot -> takeScreenshot()
@@ -600,7 +644,7 @@ fun aspectLockedStage(old: IntSize, new: IntSize, oldFrame: IntSize?, frame: Int
 fun MirrorContent(
     state: MirrorUiState,
     frame: State<VideoFrame?>,
-    onFitChange: (Boolean) -> Unit,
+    onZoom: (ZoomCommand) -> Unit,
     onAction: (MirrorAction) -> Unit,
     onReconnect: () -> Unit,
     onPointer: (PointerEvent) -> Unit,
@@ -614,7 +658,7 @@ fun MirrorContent(
 ) {
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxSize()) {
-        TopStrip(state, onFitChange)
+        TopStrip(state, onZoom)
         HorizontalDivider(color = colors.outlineVariant)
         Row(Modifier.weight(1f).fillMaxWidth()) {
             Box(
@@ -636,33 +680,124 @@ fun MirrorContent(
     }
 }
 
+/** Widths (dp) of the top strip at which secondary parts start to collapse into the overflow menu. */
+private val DETAILS_MIN = 740.dp
+private val COPY_MIN = 620.dp
+private val FIT_MIN = 480.dp
+private val ZOOM_MIN = 340.dp
+
 @Composable
-private fun TopStrip(state: MirrorUiState, onFitChange: (Boolean) -> Unit) {
+private fun TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
     val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().background(colors.surfaceContainer).padding(horizontal = 14.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        val dot = when (state.status) {
-            SessionStatus.Running -> colors.primary
-            SessionStatus.Connecting -> warnColor()
-            else -> colors.error
+    BoxWithConstraints(Modifier.fillMaxWidth().background(colors.surfaceContainer)) {
+        val w = maxWidth
+        val showDetails = state.details.isNotEmpty() && w >= DETAILS_MIN
+        val showCopy = w >= COPY_MIN
+        val showFit = w >= FIT_MIN
+        val showZoom = w >= ZOOM_MIN
+        val overflow = !showCopy || !showFit || !showZoom
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp).heightIn(min = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            val dot = when (state.status) {
+                SessionStatus.Running -> colors.primary
+                SessionStatus.Connecting -> warnColor()
+                else -> colors.error
+            }
+            Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
+            // The model and the details take the room the controls leave; the controls keep their content width,
+            // and the model ellipsizes after the details (secondary text) have been dropped.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    state.model,
+                    Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (showDetails) {
+                    Text(
+                        state.details,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+            if (showZoom) ZoomControls(state, onZoom)
+            if (showFit) {
+                FilterChip(
+                    selected = state.fit,
+                    onClick = { onZoom(if (state.fit) ZoomCommand.Actual else ZoomCommand.Fit) },
+                    label = { Text("Fit to window", maxLines = 1, softWrap = false) },
+                )
+            }
+            if (showCopy) CopyButton(text = { state.command }, label = "Copy command")
+            if (overflow) OverflowMenu(state, onZoom, showZoom = showZoom, showFit = showFit, showCopy = showCopy)
         }
-        Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
-        Text(state.model, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, maxLines = 1)
-        if (state.details.isNotEmpty()) {
-            Text(
-                state.details,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = colors.onSurfaceVariant,
-                maxLines = 1,
-            )
+    }
+}
+
+/** "−", the zoom percent (a click toggles Fit and 100 %) and "+". */
+@Composable
+private fun ZoomControls(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
+    val scale = state.zoom ?: state.fittedScale
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = { onZoom(ZoomCommand.Out) }, Modifier.size(32.dp)) {
+            Text("−", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
         }
-        Spacer(Modifier.weight(1f))
-        FilterChip(selected = state.fit, onClick = { onFitChange(!state.fit) }, label = { Text("Fit to window") })
-        CopyButton(text = { state.command }, label = "Copy command")
+        TextButton(
+            onClick = { onZoom(if (state.fit) ZoomCommand.Actual else ZoomCommand.Fit) },
+            Modifier.widthIn(min = 56.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) {
+            Text(Zoom.label(scale), maxLines = 1, softWrap = false, fontFamily = FontFamily.Monospace)
+        }
+        IconButton(onClick = { onZoom(ZoomCommand.In) }, Modifier.size(32.dp)) {
+            Text("+", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+/** The "⋮" menu holding what the top strip has no room for. */
+@Composable
+private fun OverflowMenu(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit, showZoom: Boolean, showFit: Boolean, showCopy: Boolean) {
+    var open by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    Box {
+        IconButton(onClick = { open = true }, Modifier.size(32.dp)) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "More")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            @Composable
+            fun item(text: String, command: ZoomCommand? = null, onClick: () -> Unit = {}) {
+                DropdownMenuItem(
+                    text = { Text(text, maxLines = 1, softWrap = false) },
+                    onClick = { open = false; if (command != null) onZoom(command) else onClick() },
+                )
+            }
+            if (!showZoom) {
+                item("Zoom in", ZoomCommand.In)
+                item("Zoom out", ZoomCommand.Out)
+            }
+            if (!showFit) {
+                item(if (state.fit) "Fit to window ✓" else "Fit to window", ZoomCommand.Fit)
+                item("Actual size (100%)", ZoomCommand.Actual)
+            }
+            if (!showCopy) {
+                item("Copy command") {
+                    scope.launch { clipboard.setClipEntry(ClipEntry(StringSelection(state.command))) }
+                }
+            }
+        }
     }
 }
 
@@ -705,7 +840,8 @@ private fun Stage(
     }.then(if (state.captureHint != null) Modifier.pointerHoverIcon(blankPointerIcon) else Modifier)
     val orientation = state.orientation
     val fs = state.frameSize?.let(orientation::orientedSize)
-    if (state.fit || fs == null) {
+    val zoom = state.zoom
+    if (zoom == null || fs == null) {
         Canvas(Modifier.fillMaxSize().onSizeChanged(onViewSize).then(input)) {
             frame.value // subscribe: a new frame redraws
             drawLatestFrame(latestFrame, FilterQuality.Low, orientation) { f ->
@@ -714,19 +850,28 @@ private fun Stage(
             drawClickDot()
         }
     } else {
-        // 1:1 (one frame pixel per screen pixel) in a scroll container.
+        // Zoomed: the canvas is the image at that scale (one frame pixel is `zoom` screen pixels), centred in the
+        // stage while smaller and scrolled by the scroll bars while larger. Pointer positions are canvas-local, so
+        // the scroll offset is already in them and the mapper's view rect is the canvas itself.
         val density = LocalDensity.current
         val v = rememberScrollState()
         val h = rememberScrollState()
-        Box(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize().verticalScroll(v).horizontalScroll(h), contentAlignment = Alignment.Center) {
-                Canvas(
-                    Modifier.size(with(density) { DpSize(fs.width.toDp(), fs.height.toDp()) })
-                        .onSizeChanged(onViewSize).then(input),
-                ) {
-                    frame.value // subscribe: a new frame redraws
-                    drawLatestFrame(latestFrame, FilterQuality.None, orientation) { Rect(0f, 0f, size.width, size.height) }
-                    drawClickDot()
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val stageW = maxWidth
+            val stageH = maxHeight
+            Box(
+                Modifier.fillMaxSize().verticalScroll(v).horizontalScroll(h),
+            ) {
+                Box(Modifier.widthIn(min = stageW).heightIn(min = stageH), contentAlignment = Alignment.Center) {
+                    Canvas(
+                        Modifier.size(with(density) { DpSize((fs.width * zoom).toDp(), (fs.height * zoom).toDp()) })
+                            .onSizeChanged(onViewSize).then(input),
+                    ) {
+                        frame.value // subscribe: a new frame redraws
+                        val quality = if (zoom >= 1f) FilterQuality.None else FilterQuality.Low
+                        drawLatestFrame(latestFrame, quality, orientation) { Rect(0f, 0f, size.width, size.height) }
+                        drawClickDot()
+                    }
                 }
             }
             VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight())
@@ -809,7 +954,7 @@ private val toolbarIcons: Map<MirrorAction, ImageVector> = mapOf(
 private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
-        Modifier.width(64.dp).fillMaxHeight().background(colors.surfaceContainer).padding(vertical = 12.dp),
+        Modifier.width(64.dp).fillMaxHeight().background(colors.surfaceContainer).verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -865,19 +1010,31 @@ private fun ToolbarButton(action: MirrorAction, enabled: Boolean, label: String,
 @Composable
 private fun StatusLine(state: MirrorUiState) {
     val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().background(colors.surfaceContainer).padding(horizontal = 16.dp, vertical = 7.dp),
-        horizontalArrangement = Arrangement.spacedBy(18.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val style = MaterialTheme.typography.labelMedium
-        state.recordingLabel?.let { Text(it, style = style, color = colors.error, fontWeight = FontWeight.Medium, maxLines = 1) }
-        val fs = state.frameSize
-        val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (state.maxSize?.let { " shown at $it max" } ?: "")
-        Text(size, style = style, color = colors.onSurfaceVariant)
-        Text("${state.codec} · ${state.bitRate}", style = style, color = colors.onSurfaceVariant)
-        Text("%.1f fps".format(state.fps), style = style, color = colors.onSurfaceVariant)
-        state.audioNote?.let { Text(it, style = style, color = colors.onSurfaceVariant, maxLines = 1) }
-        state.captureHint?.let { Text(it, style = style, color = colors.primary, maxLines = 1) }
+    BoxWithConstraints(Modifier.fillMaxWidth().background(colors.surfaceContainer)) {
+        // Secondary readouts go first when narrow: the encoder, then the "shown at" suffix, then the fps.
+        val showCodec = maxWidth >= 600.dp
+        val showMax = maxWidth >= 480.dp
+        val showFps = maxWidth >= 300.dp
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val style = MaterialTheme.typography.labelMedium
+            state.recordingLabel?.let {
+                Text(it, style = style, color = colors.error, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+            }
+            val fs = state.frameSize
+            val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (if (showMax) state.maxSize?.let { " shown at $it max" } ?: "" else "")
+            Text(size, style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            if (showCodec) Text("${state.codec} · ${state.bitRate}", style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false)
+            if (showFps) Text("%.1f fps".format(state.fps), style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false)
+            state.audioNote?.let {
+                Text(it, Modifier.weight(1f, fill = false), style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+            state.captureHint?.let {
+                Text(it, Modifier.weight(1f, fill = false), style = style, color = colors.primary, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
 }
