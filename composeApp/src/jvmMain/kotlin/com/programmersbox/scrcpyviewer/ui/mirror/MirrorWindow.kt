@@ -62,10 +62,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.awt.awtEventOrNull
 import androidx.compose.ui.input.pointer.PointerEvent
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -100,13 +97,10 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
-import java.awt.Point
-import java.awt.Robot
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
-import java.awt.image.BufferedImage
 import java.awt.event.KeyEvent as AwtKeyEvent
 import javax.swing.SwingUtilities
 import kotlin.math.abs
@@ -251,10 +245,6 @@ fun MirrorWindow(
     val control = "no-control" !in e
     val hidKeyboard = remember(session) { if (control && e["keyboard"] == "uhid") HidKeyboard() else null }
     val hidMouse = remember(session) { if (control && e["mouse"] == "uhid") HidMouse() else null }
-    val capture = remember(session) { hidMouse?.let { MouseCapture() } }
-    val tracker = remember(session) { PointerDeltaTracker() }
-    val robot = remember(hidMouse != null) { if (hidMouse != null) runCatching { Robot() }.getOrNull() else null }
-    val captured = capture?.active?.collectAsState()?.value == true
     val mapper = remember(session) {
         InputMapper.forOptions(
             values,
@@ -267,6 +257,16 @@ fun MirrorWindow(
         )
     }
     val send: (List<ControlMessage>) -> Unit = { msgs -> msgs.forEach(session::send) }
+    // Set by the window's focus listener; the AWT window only exists inside Window {} below.
+    var windowFocused by remember { mutableStateOf(false) }
+    var awtWindowRef by remember { mutableStateOf<java.awt.Window?>(null) }
+    val robot = remember(hidMouse != null) { if (hidMouse != null) WindowPointerCapture.robotOrNull() else null }
+    val capture = remember(session) {
+        hidMouse?.let {
+            WindowPointerCapture(MouseCapture(), mapper, hidKeyboard, send, isFocused = { awtWindowRef?.isFocused == true }, robot)
+        }
+    }
+    val captured = capture?.active?.collectAsState()?.value == true
 
     // UHID devices live as long as the session: created first thing (the control queue holds them until the
     // socket is up), destroyed when the window lets go of the session.
@@ -286,12 +286,11 @@ fun MirrorWindow(
         }
     }
     if (capture != null) {
-        // As the scrcpy client: capture on the first frame.
+        // As the scrcpy client: capture on the first frame, or at once without video (screen.c).
         LaunchedEffect(session) {
-            session.frameSize.first { it != null }
-            capture.setActive(true)
+            if (values.hasVideoPlayback()) session.frameSize.first { it != null }
+            capture.requestCapture()
         }
-        LaunchedEffect(captured) { tracker.reset() }
     }
 
     val state = MirrorUiState(
@@ -313,7 +312,7 @@ fun MirrorWindow(
         command = CommandLine.build(serial, values),
         background = parseHexColor(e["background-color"]),
         actionsEnabled = status == SessionStatus.Running && "no-control" !in e,
-        captureHint = if (captured) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
+        captureHint = if (captured && windowFocused) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
     )
 
     Window(
@@ -364,11 +363,21 @@ fun MirrorWindow(
                 msgs.isNotEmpty()
             }
             val focus = object : WindowAdapter() {
+                override fun windowGainedFocus(ev: WindowEvent) {
+                    windowFocused = true
+                    capture?.focusGained()
+                }
+
                 override fun windowLostFocus(ev: WindowEvent) {
+                    windowFocused = false
                     capture?.focusLost()
+                    // Releases that happen in another window never arrive: release what the device holds.
                     hidKeyboard?.let { send(it.releaseAll()) }
+                    send(mapper.releaseButtons())
                 }
             }
+            awtWindowRef = awtWindow
+            windowFocused = awtWindow.isFocused
             val kfm = KeyboardFocusManager.getCurrentKeyboardFocusManager()
             kfm.addKeyEventDispatcher(dispatcher)
             awtWindow.addWindowFocusListener(focus)
@@ -379,34 +388,6 @@ fun MirrorWindow(
         }
 
         val density = LocalDensity.current
-
-        /** Relative mode: deltas from screen positions, and the pointer kept near the centre of the video. */
-        fun capturedPointer(ev: PointerEvent) {
-            val c = capture ?: return
-            val kind = when (ev.type) {
-                PointerEventType.Move -> PointerKind.Move
-                PointerEventType.Press -> PointerKind.Press
-                PointerEventType.Release -> PointerKind.Release
-                PointerEventType.Scroll -> PointerKind.Scroll
-                else -> null
-            }
-            val awt = ev.awtEventOrNull
-            val local = ev.changes.firstOrNull()?.position
-            if (kind == null || c.pointer(kind)) {
-                if (kind == null && ev.type == PointerEventType.Exit && c.active.value && awt != null && local != null) {
-                    recentre(robot, tracker, awtWindow, awt, local, viewSize, density.density, force = true)
-                }
-                return
-            }
-            if (kind != PointerKind.Move) {
-                send(mapper.pointer(ev))
-                return
-            }
-            if (awt == null || local == null) return
-            val d = tracker.move(awt.xOnScreen, awt.yOnScreen)
-            send(mapper.relativeMove(d.x, d.y))
-            recentre(robot, tracker, awtWindow, awt, local, viewSize, density.density, force = false)
-        }
 
         var stage by remember { mutableStateOf(IntSize.Zero) }
         var autoSized by remember { mutableStateOf(explicitSize) }
@@ -451,7 +432,7 @@ fun MirrorWindow(
                     onPointer = {
                         when {
                             "no-control" in e -> Unit
-                            capture != null -> capturedPointer(it)
+                            capture != null -> capture.pointer(it, awtWindow, viewSize, density.density)
                             else -> send(mapper.pointer(it))
                         }
                     },
@@ -461,40 +442,6 @@ fun MirrorWindow(
             }
         }
     }
-}
-
-/**
- * Moves the captured pointer back to the centre of the video view once it is more than a quarter of the view away
- * (or always with [force], when it left the view), so it never hits the screen edge. [local] is the event position
- * in the view (px), [awt] the same event in screen coordinates (points). The target is kept inside the window.
- */
-private fun recentre(
-    robot: Robot?,
-    tracker: PointerDeltaTracker,
-    window: java.awt.Window,
-    awt: java.awt.event.MouseEvent,
-    local: androidx.compose.ui.geometry.Offset,
-    viewSize: IntSize,
-    density: Float,
-    force: Boolean,
-) {
-    if (robot == null || viewSize.width <= 0 || viewSize.height <= 0) return
-    val originX = awt.xOnScreen - local.x / density
-    val originY = awt.yOnScreen - local.y / density
-    val w = window.bounds
-    val cx = (originX + viewSize.width / 2f / density).roundToInt().coerceIn(w.x + 40, maxOf(w.x + 40, w.x + w.width - 40))
-    val cy = (originY + viewSize.height / 2f / density).roundToInt().coerceIn(w.y + 40, maxOf(w.y + 40, w.y + w.height - 40))
-    val limit = min(viewSize.width, viewSize.height) / 4f / density
-    if (!force && abs(awt.xOnScreen - cx) <= limit && abs(awt.yOnScreen - cy) <= limit) return
-    robot.mouseMove(cx, cy)
-    tracker.warped(IntOffset(cx, cy))
-}
-
-/** Transparent cursor shown over the video while the mouse is captured; created on first use (not headless). */
-private val blankPointerIcon: PointerIcon by lazy {
-    runCatching {
-        PointerIcon(Toolkit.getDefaultToolkit().createCustomCursor(BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), Point(0, 0), "blank"))
-    }.getOrDefault(PointerIcon.Default)
 }
 
 /**

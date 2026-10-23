@@ -48,12 +48,14 @@ class InputMapper(
     private val hover: Boolean = true,
     private val keyMode: KeyInjectMode = KeyInjectMode.Mixed,
     private val forwardKeyRepeat: Boolean = true,
-    private val bindings: MouseBindings = MouseBindings.default(uhidMouse = false),
+    private val bindings: MouseBindings = MouseBindings.default(sdkMouse = true),
     private val hidMouse: HidMouse? = null,
     private val mouseEnabled: Boolean = true,
     private val keyboardEnabled: Boolean = true,
 ) {
     private var buttons = 0
+    /** Device position of the last forwarded SDK mouse event, for [releaseButtons]. */
+    private var lastPosition: Position? = null
     private var lastKeyDown = -1
     private var repeat = 0
 
@@ -78,6 +80,19 @@ class InputMapper(
 
     fun release(position: Offset, button: PointerButton, shift: Boolean = false): List<ControlMessage> =
         mouseButton(position, button, down = false, shift, clicks = 1)
+
+    /**
+     * Releases every held button (the window lost focus, so their releases will never arrive): one HID report, or
+     * an SDK `ACTION_UP` at the last position. Empty when no button is held.
+     */
+    fun releaseButtons(): List<ControlMessage> {
+        if (buttons == 0) return emptyList()
+        val released = buttons
+        buttons = 0
+        hidMouse?.let { return listOf(it.click(0)) }
+        val p = lastPosition ?: return emptyList()
+        return listOf(touch(ACTION_UP, p, pressure = 0f, actionButton = released and -released))
+    }
 
     /** Relative motion of a captured pointer (UHID mouse only). */
     fun relativeMove(dx: Int, dy: Int): List<ControlMessage> {
@@ -140,14 +155,17 @@ class InputMapper(
     private fun keyIf(action: Int, keycode: Int): List<ControlMessage> =
         if (keyboardEnabled) listOf(ControlMessage.InjectKeycode(action, keycode, 0, 0)) else emptyList()
 
-    private fun touch(action: Int, p: Position, pressure: Float, actionButton: Int) = ControlMessage.InjectTouch(
-        action = action,
-        pointerId = ControlMessage.POINTER_ID_MOUSE,
-        position = p,
-        pressure = pressure.coerceIn(0f, 1f),
-        actionButton = actionButton,
-        buttons = buttons,
-    )
+    private fun touch(action: Int, p: Position, pressure: Float, actionButton: Int): ControlMessage.InjectTouch {
+        lastPosition = p
+        return ControlMessage.InjectTouch(
+            action = action,
+            pointerId = ControlMessage.POINTER_ID_MOUSE,
+            position = p,
+            pressure = pressure.coerceIn(0f, 1f),
+            actionButton = actionButton,
+            buttons = buttons,
+        )
+    }
 
     /** Device position of a view point; null outside the frame (unless [clamp]) or before the first frame. */
     fun toDevice(point: Offset, clamp: Boolean): Position? {
@@ -304,7 +322,7 @@ class InputMapper(
                 forwardKeyRepeat = "no-key-repeat" !in e,
                 bindings = MouseBindings.forOptions(values),
                 hidMouse = hidMouse,
-                mouseEnabled = e["mouse"] != "disabled",
+                mouseEnabled = effectiveMouseMode(values) != MouseMode.Disabled,
                 keyboardEnabled = e["keyboard"] != "disabled",
             )
         }

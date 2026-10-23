@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.unit.IntSize
+import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
 import com.programmersbox.scrcpyviewer.scrcpy.Position
 import java.awt.event.KeyEvent as AwtKeyEvent
@@ -150,7 +151,7 @@ class InputMapperTest {
 
     @Test
     fun `uhid mouse sends relative HID reports, bindings first`() {
-        val m = InputMapper(frameSize = { size }, viewRect = { view }, bindings = MouseBindings.default(uhidMouse = true), hidMouse = HidMouse())
+        val m = InputMapper.forOptions(OptionValues(mapOf("mouse" to "uhid")), { size }, { view }, { false }, hidMouse = HidMouse())
         fun List<ControlMessage>.hid() = (single() as ControlMessage.UhidInput).also { assertEquals(HidMouse.ID, it.id) }.data.map { it.toInt() }
         assertEquals(listOf(1, 0, 0, 0, 0), m.press(Offset(1f, 1f), PointerButton.Primary).hid(), "no position: bars do not matter")
         assertEquals(listOf(1, 7, -3, 0, 0), m.relativeMove(7, -3).hid())
@@ -159,5 +160,32 @@ class InputMapperTest {
         assertEquals(listOf(2, 0, 0, 0, 0), m.release(center, PointerButton.Primary).hid())
         assertEquals(listOf(0, 0, 0, -1, 0), m.scroll(center, Offset(0f, 1f)).hid())
         assertEquals(listOf<ControlMessage>(ControlMessage.BackOrScreenOn(0)), m.press(center, PointerButton.Secondary, shift = true), "Shift: bhsn")
+    }
+
+    @Test
+    fun `releaseButtons ends held SDK and HID buttons`() {
+        assertTrue(mapper.releaseButtons().isEmpty())
+        mapper.press(center, PointerButton.Primary)
+        mapper.move(Offset(260f, 250f))
+        val up = mapper.releaseButtons().single() as ControlMessage.InjectTouch
+        assertEquals(InputMapper.ACTION_UP, up.action)
+        assertEquals(InputMapper.BUTTON_PRIMARY, up.actionButton)
+        assertEquals(0, up.buttons)
+        assertEquals((mapper.move(Offset(260f, 250f)).single() as ControlMessage.InjectTouch).position, up.position)
+        assertTrue(mapper.releaseButtons().isEmpty())
+        assertTrue(mapper.release(center, PointerButton.Primary).isEmpty(), "the late release is dropped")
+
+        val hid = InputMapper.forOptions(OptionValues(mapOf("mouse" to "uhid")), { size }, { view }, { false }, hidMouse = HidMouse())
+        hid.press(center, PointerButton.Primary)
+        hid.press(center, PointerButton.Secondary)
+        assertEquals(listOf(0, 0, 0, 0, 0), (hid.releaseButtons().single() as ControlMessage.UhidInput).data.map { it.toInt() })
+        assertTrue(hid.releaseButtons().isEmpty())
+    }
+
+    @Test
+    fun `no playback means no SDK mouse unless asked for`() {
+        val m = InputMapper.forOptions(OptionValues(mapOf("no-playback" to null)), { size }, { view }, { false })
+        assertTrue(m.press(center, PointerButton.Primary).isEmpty())
+        assertTrue(m.press(center, PointerButton.Secondary).isEmpty(), "disabled mode default ++++ forwards, and forwards nothing")
     }
 }

@@ -84,12 +84,38 @@ data class MouseBindings(val primary: String, val secondary: String) {
             return MouseBindings(pri, if (value.length == 9) value.substring(5) else pri)
         }
 
-        /** v5.0 default: `bhsn:++++` for the SDK mouse, `++++:bhsn` for UHID (and AOA). */
-        fun default(uhidMouse: Boolean): MouseBindings =
-            if (uhidMouse) MouseBindings(FORWARD, SHORTCUTS) else MouseBindings(SHORTCUTS, FORWARD)
+        /** v5.0 default: `bhsn:++++` for the SDK mouse, `++++:bhsn` for every other mode (UHID, AOA, disabled). */
+        fun default(sdkMouse: Boolean): MouseBindings =
+            if (sdkMouse) MouseBindings(SHORTCUTS, FORWARD) else MouseBindings(FORWARD, SHORTCUTS)
 
-        /** `--mouse-bind` when set and valid, else the default for `--mouse`. */
+        /** `--mouse-bind` when set and valid, else the default for the effective mouse mode. */
         fun forOptions(values: OptionValues): MouseBindings =
-            values.entries["mouse-bind"]?.let(::parse) ?: default(uhidMouse = values.entries["mouse"] == "uhid")
+            values.entries["mouse-bind"]?.let(::parse) ?: default(sdkMouse = effectiveMouseMode(values) == MouseMode.Sdk)
     }
 }
+
+/** The mouse input mode after `parse_args()` resolved `--mouse` (v5.0 `cli.c`), or null when it stays unresolved. */
+enum class MouseMode { Sdk, Uhid, Disabled }
+
+/**
+ * `--mouse` as cli.c resolves it: explicit values as given; when absent, and only with control and the display as
+ * the video source, SDK with video playback and DISABLED without it. Otherwise (no control, camera) the mode stays
+ * AUTO, which is null here and gets no SDK mouse.
+ */
+fun effectiveMouseMode(values: OptionValues): MouseMode? {
+    val e = values.entries
+    return when (e["mouse"]) {
+        "sdk" -> MouseMode.Sdk
+        "uhid" -> MouseMode.Uhid
+        "disabled" -> MouseMode.Disabled
+        else -> when {
+            "no-control" in e || e["video-source"] == "camera" -> null
+            values.hasVideoPlayback() -> MouseMode.Sdk
+            else -> MouseMode.Disabled
+        }
+    }
+}
+
+/** `opts->video_playback`: false with `--no-video`, `--no-video-playback` or `--no-playback`. */
+fun OptionValues.hasVideoPlayback(): Boolean =
+    "no-video" !in entries && "no-video-playback" !in entries && "no-playback" !in entries
