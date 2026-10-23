@@ -209,4 +209,49 @@ class DevicesViewModelTest {
         vm.toggle("show-touches", true)
         assertTrue(vm.state.value.isModified)
     }
+
+    private val qaPreset = Preset("q", "QA default", options = OptionValues(mapOf("no-audio" to null)))
+    private val recording = Preset("r", "recording", options = OptionValues(mapOf("record" to "out.mp4")))
+
+    @Test
+    fun `applyPreset swaps values and label and is not modified`() {
+        presets.upsert(qaPreset)
+        presets.upsert(recording)
+        val vm = vm()
+        vm.applyPreset("q")
+        vm.toggle("show-touches", true)
+        assertTrue(vm.state.value.isModified)
+        vm.applyPreset("r")
+        val st = vm.state.value
+        assertEquals(recording.options, st.values)
+        assertEquals("recording", st.presetLabel)
+        assertEquals("r", st.basePresetId)
+        assertFalse(st.isModified)
+        assertEquals(listOf("QA default", "recording"), st.presets.map { it.name })
+    }
+
+    @Test
+    fun `applyPreset null keeps values and shows No preset`() {
+        presets.upsert(qaPreset)
+        val vm = vm()
+        vm.applyPreset("q")
+        vm.applyPreset(null)
+        val st = vm.state.value
+        assertEquals(qaPreset.options, st.values)
+        assertEquals("No preset", st.presetLabel)
+        assertNull(st.basePresetId)
+        assertFalse(st.hasBasePreset)
+    }
+
+    @Test
+    fun `applyPreset does nothing with no selection`() {
+        presets.upsert(qaPreset)
+        devices.value = emptyList()
+        val vm = vm()
+        vm.applyPreset("q")
+        assertNull(vm.state.value.selectedSerial)
+        assertEquals("No preset", vm.state.value.presetLabel)
+        devices.value = listOf(ready)
+        assertEquals(OptionValues(emptyMap()), vm.state.value.values)
+    }
 }

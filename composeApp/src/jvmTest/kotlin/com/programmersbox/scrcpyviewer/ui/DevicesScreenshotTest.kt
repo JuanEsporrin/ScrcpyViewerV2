@@ -10,6 +10,7 @@ import com.programmersbox.scrcpyviewer.adb.DeviceState
 import com.programmersbox.scrcpyviewer.options.OptionCatalog
 import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionValues
+import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesContent
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesUiState
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
@@ -67,4 +68,28 @@ class DevicesScreenshotTest {
         "devices-light-audio.png", ThemeMode.Light,
         state.copy(groupFilter = OptionGroup.Audio, visibleOptions = OptionCatalog.all.filter { it.group == OptionGroup.Audio }),
     )
+
+    @Test
+    fun `devices light preset menu`() {
+        val out = outDir.resolve("devices-light-preset-menu.png")
+        renderToPng(1280, 800, out) {
+            ScrcpyViewerTheme(ThemeMode.Light) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    DevicesContent(
+                        state.copy(
+                            presets = listOf(
+                                Preset("n", "New preset", options = OptionValues(emptyMap())),
+                                Preset("r", "recording", options = values),
+                            ),
+                            basePresetId = "r",
+                            presetLabel = "recording",
+                        ),
+                        {}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, {}, {},
+                        presetMenuOpen = true,
+                    )
+                }
+            }
+        }
+        assertTrue(Files.size(out) > 10_000)
+    }
 }

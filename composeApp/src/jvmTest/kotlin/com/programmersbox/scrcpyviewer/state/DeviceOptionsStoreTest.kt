@@ -137,4 +137,15 @@ class DeviceOptionsStoreTest {
         assertEquals(OptionValues(emptyMap()), s.workingSet("S1").value.values)
         assertTrue(Files.exists(dir.resolve("devices.json.bak")))
     }
+
+    @Test
+    fun `clearPreset keeps values and drops base preset`() {
+        presets.upsert(a)
+        val st = store()
+        st.applyPreset("S1", "a")
+        st.clearPreset("S1")
+        assertEquals(WorkingSet(optsA, null), st.workingSet("S1").value)
+        assertNull(st.effectiveBasePresetId("S1"))
+        assertEquals(WorkingSet(optsA, null), store().workingSet("S1").value)
+    }
 }

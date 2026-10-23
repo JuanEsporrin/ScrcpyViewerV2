@@ -8,6 +8,7 @@ import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionSpec
 import com.programmersbox.scrcpyviewer.options.OptionType
 import com.programmersbox.scrcpyviewer.options.OptionValues
+import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +41,10 @@ data class DevicesUiState(
     val hasBasePreset: Boolean = false,
     /** True when the working options differ from the base preset (or from nothing, with no base preset). */
     val isModified: Boolean = false,
+    /** Every preset, for the footer's preset menu. */
+    val presets: List<Preset> = emptyList(),
+    /** The selected device's base preset (still existing), or null for "No preset". */
+    val basePresetId: String? = null,
 )
 
 private data class Selection(val devices: List<Device>, val connected: Boolean, val serial: String?)
@@ -77,7 +82,7 @@ class DevicesViewModel(
         combine(query, group) { q, g -> Filters(q, g) },
         workingValues,
         presets.presets,
-    ) { sel, filters, values, _ ->
+    ) { sel, filters, values, allPresets ->
         val serial = sel.serial
         val current = values ?: OptionValues(emptyMap())
         val errors = current.validate()
@@ -95,6 +100,8 @@ class DevicesViewModel(
             adbConnected = sel.connected,
             hasBasePreset = serial != null && options.effectiveBasePresetId(serial) != null,
             isModified = serial != null && options.isModified(serial),
+            presets = allPresets,
+            basePresetId = serial?.let { options.effectiveBasePresetId(it) },
         )
     }.stateIn(scope, SharingStarted.Eagerly, DevicesUiState(devices = devices.value, adbConnected = connected.value))
 
@@ -122,6 +129,12 @@ class DevicesViewModel(
         val serial = selectedSerial.value ?: return
         val current = options.workingSet(serial).value.values
         if (flag in current.entries) options.edit(serial, current.with(flag, value))
+    }
+
+    /** Switches the selected device's options to [presetId]; `null` keeps the values and detaches from any preset. */
+    fun applyPreset(presetId: String?) {
+        val serial = selectedSerial.value ?: return
+        if (presetId == null) options.clearPreset(serial) else options.applyPreset(serial, presetId)
     }
 
     fun save() {

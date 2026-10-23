@@ -47,6 +47,9 @@ class DeviceOptionsStore(file: Path, private val presets: PresetStore, scope: Co
         mutate(serial) { WorkingSet(preset.options, preset.id) }
     }
 
+    /** Keeps the current values but forgets the base preset ("No preset"). */
+    fun clearPreset(serial: String) = mutate(serial) { it.copy(basePresetId = null) }
+
     /** The base preset id if that preset still exists, else null. */
     fun effectiveBasePresetId(serial: String): String? = synchronized(lock) { basePreset(flowFor(serial).value)?.id }
 

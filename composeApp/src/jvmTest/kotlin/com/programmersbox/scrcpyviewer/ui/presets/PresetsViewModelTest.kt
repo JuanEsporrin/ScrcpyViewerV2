@@ -194,4 +194,21 @@ class PresetsViewModelTest {
 
     private fun CoroutineScope.launchCollect(vm: PresetsViewModel, into: MutableList<String>) =
         launch(start = CoroutineStart.UNDISPATCHED) { vm.messages.collect { into += it } }
+
+    @Test
+    fun `edit saves name description and options and a device based on it sees the change as modified`() {
+        val vm = vm()
+        options.applyPreset("R1", "qa")
+        assertFalse(options.isModified("R1"))
+        val newValues = OptionValues(mapOf("max-size" to "1280"))
+        vm.edit("qa", "  QA renamed ", "Fresh", newValues)
+        val saved = store.presets.value.first { it.id == "qa" }
+        assertEquals(Preset("qa", "QA renamed", "Fresh", newValues), saved)
+        // The device keeps its own copy of the values; it now differs from the edited preset until re-applied.
+        assertEquals("qa", options.effectiveBasePresetId("R1"))
+        assertTrue(options.isModified("R1"))
+        options.applyPreset("R1", "qa")
+        assertEquals(newValues, options.workingSet("R1").value.values)
+        assertFalse(options.isModified("R1"))
+    }
 }

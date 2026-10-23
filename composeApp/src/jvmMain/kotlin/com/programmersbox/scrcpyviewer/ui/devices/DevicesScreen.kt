@@ -23,11 +23,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -73,6 +77,7 @@ fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier) {
         onSaveAsNew = viewModel::saveAsNew,
         onMirror = viewModel::mirror,
         modifier = modifier,
+        onPreset = viewModel::applyPreset,
     )
 }
 
@@ -90,6 +95,9 @@ fun DevicesContent(
     onSaveAsNew: (String) -> Unit,
     onMirror: () -> Unit,
     modifier: Modifier = Modifier,
+    onPreset: (String?) -> Unit = {},
+    /** Starts the preset menu open (for screenshots). */
+    presetMenuOpen: Boolean = false,
 ) {
     Row(modifier.fillMaxSize()) {
         DeviceColumn(state, onSelect, onOpen)
@@ -101,7 +109,7 @@ fun DevicesContent(
                 }
             } else {
                 OptionsPane(state, onQuery, onGroup, onToggle, onValue, Modifier.weight(1f))
-                Footer(state, onSave, onSaveAsNew, onMirror)
+                Footer(state, onSave, onSaveAsNew, onMirror, onPreset, presetMenuOpen)
             }
         }
     }
@@ -297,7 +305,14 @@ private fun OptionColumn(
 }
 
 @Composable
-private fun Footer(state: DevicesUiState, onSave: () -> Unit, onSaveAsNew: (String) -> Unit, onMirror: () -> Unit) {
+private fun Footer(
+    state: DevicesUiState,
+    onSave: () -> Unit,
+    onSaveAsNew: (String) -> Unit,
+    onMirror: () -> Unit,
+    onPreset: (String?) -> Unit,
+    presetMenuOpen: Boolean,
+) {
     var naming by remember { mutableStateOf(false) }
     val modified = state.isModified
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
@@ -307,7 +322,7 @@ private fun Footer(state: DevicesUiState, onSave: () -> Unit, onSaveAsNew: (Stri
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            AssistChip(onClick = {}, label = { Text("Preset: ${state.presetLabel}") })
+            PresetChip(state, onPreset, presetMenuOpen)
             if (modified) {
                 if (state.hasBasePreset) TextButton(onSave) { Text("Save") }
             }
@@ -342,6 +357,37 @@ private fun Footer(state: DevicesUiState, onSave: () -> Unit, onSaveAsNew: (Stri
         }
     }
     if (naming) SaveAsDialog(onDismiss = { naming = false }, onConfirm = { onSaveAsNew(it); naming = false })
+}
+
+@Composable
+private fun PresetChip(state: DevicesUiState, onPreset: (String?) -> Unit, initiallyOpen: Boolean) {
+    var open by remember { mutableStateOf(initiallyOpen) }
+    Box {
+        AssistChip(
+            onClick = { open = true },
+            enabled = state.selectedSerial != null,
+            label = { Text("Preset: ${state.presetLabel}") },
+            trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose preset", Modifier.size(18.dp)) },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            PresetMenuItem("No preset", checked = state.basePresetId == null) { open = false; onPreset(null) }
+            state.presets.forEach { preset ->
+                PresetMenuItem(preset.name, checked = state.basePresetId == preset.id) { open = false; onPreset(preset.id) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetMenuItem(label: String, checked: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        onClick = onClick,
+        leadingIcon = {
+            if (checked) Icon(Icons.Filled.Check, contentDescription = "Current preset", Modifier.size(18.dp))
+            else Spacer(Modifier.size(18.dp))
+        },
+    )
 }
 
 @Composable
