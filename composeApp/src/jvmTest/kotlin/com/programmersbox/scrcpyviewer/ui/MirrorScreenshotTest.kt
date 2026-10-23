@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntSize
 import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
+import com.programmersbox.scrcpyviewer.ui.mirror.DisplayOrientation
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorContent
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorUiState
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
@@ -96,5 +97,15 @@ class MirrorScreenshotTest {
     fun `mirror disconnected waiting dark`() = render(
         "mirror-disconnected-dark.png", ThemeMode.Dark,
         state.copy(status = SessionStatus.Disconnected, fps = 0.0, canReconnect = false, actionsEnabled = false),
+    )
+
+    @Test
+    fun `mirror display-orientation 90`() = render(
+        "mirror-orientation-90.png", ThemeMode.Light, state.copy(orientation = DisplayOrientation.R90),
+    )
+
+    @Test
+    fun `mirror display-orientation flip0`() = render(
+        "mirror-orientation-flip0.png", ThemeMode.Light, state.copy(orientation = DisplayOrientation.Flip0),
     )
 }

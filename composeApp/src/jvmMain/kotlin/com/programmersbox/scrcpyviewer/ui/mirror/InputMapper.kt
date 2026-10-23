@@ -26,7 +26,9 @@ enum class KeyInjectMode { Mixed, Text, Raw }
  *
  * [viewRect] is the area (in the pointer events' coordinates) the video is fitted into. The frame of [frameSize]
  * (the size of the image on screen; it changes on rotation) is letterboxed inside it, or stretched to fill it when
- * [stretch] returns true. Device positions carry that frame size as the screen size.
+ * [stretch] returns true. [orientation] (`--display-orientation`) rotates/flips the drawn frame, so the letterbox
+ * is computed for the oriented size and view points are turned back into frame points. Device positions carry the
+ * frame size as the screen size.
  *
  * - Buttons other than the left one go through [bindings] (`--mouse-bind`; the secondary set while Shift is held):
  *   BACK is `BackOrScreenOn`, HOME and APP_SWITCH are key down/up (only with a keyboard, [keyboardEnabled]), the
@@ -52,6 +54,7 @@ class InputMapper(
     private val hidMouse: HidMouse? = null,
     private val mouseEnabled: Boolean = true,
     private val keyboardEnabled: Boolean = true,
+    private val orientation: DisplayOrientation = DisplayOrientation.R0,
 ) {
     private var buttons = 0
     /** Device position of the last forwarded SDK mouse event, for [releaseButtons]. */
@@ -171,16 +174,24 @@ class InputMapper(
     fun toDevice(point: Offset, clamp: Boolean): Position? {
         val size = frameSize() ?: return null
         if (size.width <= 0 || size.height <= 0) return null
-        val content = contentRect(size, viewRect(), stretch())
+        val oriented = orientation.orientedSize(size)
+        val content = contentRect(oriented, viewRect(), stretch())
         if (content.width <= 0f || content.height <= 0f) return null
-        var x = floor((point.x - content.left).toDouble() * size.width / content.width + EPSILON).toInt()
-        var y = floor((point.y - content.top).toDouble() * size.height / content.height + EPSILON).toInt()
-        val inside = x in 0 until size.width && y in 0 until size.height
+        val w = oriented.width.toDouble()
+        val h = oriented.height.toDouble()
+        // Point in the displayed (oriented) image, in its pixels.
+        var ox = (point.x - content.left).toDouble() * w / content.width
+        var oy = (point.y - content.top).toDouble() * h / content.height
+        val inside = ox >= -EPSILON && ox < w - EPSILON && oy >= -EPSILON && oy < h - EPSILON
         if (!inside) {
             if (!clamp) return null
-            x = x.coerceIn(0, size.width - 1)
-            y = y.coerceIn(0, size.height - 1)
+            ox = ox.coerceIn(0.0, w)
+            oy = oy.coerceIn(0.0, h)
         }
+        val (fx, fy) = orientation.toFrame(ox, oy, w, h)
+        // w - x is w at the left edge: keep the result on the frame.
+        val x = floor(fx + EPSILON).toInt().coerceIn(0, size.width - 1)
+        val y = floor(fy + EPSILON).toInt().coerceIn(0, size.height - 1)
         return Position(x, y, size.width, size.height)
     }
 
@@ -300,7 +311,7 @@ class InputMapper(
 
         /**
          * `--keyboard`/`--mouse`/`--mouse-bind`/`--prefer-text`/`--raw-key-events`/`--no-key-repeat`/`--no-mouse-hover`
-         * for a session. [hidMouse] is the session's UHID mouse when `--mouse=uhid`.
+         * and `--display-orientation` (or `--orientation`) for a session. [hidMouse] is the session's UHID mouse when `--mouse=uhid`.
          */
         fun forOptions(
             values: OptionValues,
@@ -324,6 +335,7 @@ class InputMapper(
                 hidMouse = hidMouse,
                 mouseEnabled = effectiveMouseMode(values) != MouseMode.Disabled,
                 keyboardEnabled = e["keyboard"] != "disabled",
+                orientation = DisplayOrientation.forOptions(values),
             )
         }
 

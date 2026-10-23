@@ -67,6 +67,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -170,6 +171,8 @@ data class MirrorUiState(
     val recordEnabled: Boolean = false,
     /** "● REC mm:ss" while recording. */
     val recordingLabel: String? = null,
+    /** `display-orientation`: how the frame is turned on screen. */
+    val orientation: DisplayOrientation = DisplayOrientation.R0,
 )
 
 /** "● REC mm:ss" for a recording running for [elapsedNanos]. */
@@ -322,6 +325,9 @@ fun MirrorWindow(
         }
     }
 
+    val orientation = remember(values) { DisplayOrientation.forOptions(values) }
+    // The window is sized for the image as displayed (turned by display-orientation).
+    val displayedSize = frameSize?.let(orientation::orientedSize)
     val renderFit = e["render-fit"]
     var fit by remember { mutableStateOf(renderFit != "unscaled") }
     val stretch = renderFit == "stretched"
@@ -419,6 +425,7 @@ fun MirrorWindow(
         screenshotEnabled = frame.value != null,
         recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),
         recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
+        orientation = orientation,
     )
 
     Window(
@@ -500,8 +507,8 @@ fun MirrorWindow(
         var lastStage by remember { mutableStateOf(IntSize.Zero) }
         var lastFrame by remember { mutableStateOf<IntSize?>(null) }
         // Initial size from the first frame (fit to the screen), then the aspect ratio lock on every resize.
-        LaunchedEffect(stage, frameSize, fit) {
-            val fs = frameSize ?: return@LaunchedEffect
+        LaunchedEffect(stage, displayedSize, fit) {
+            val fs = displayedSize ?: return@LaunchedEffect
             if (stage == IntSize.Zero || windowState.placement != WindowPlacement.Floating) return@LaunchedEffect
             val target: IntSize? = when {
                 !autoSized -> {
@@ -664,13 +671,13 @@ private fun Stage(
             }
         }
     }.then(if (state.captureHint != null) Modifier.pointerHoverIcon(blankPointerIcon) else Modifier)
-    val fs = state.frameSize
+    val orientation = state.orientation
+    val fs = state.frameSize?.let(orientation::orientedSize)
     if (state.fit || fs == null) {
         Canvas(Modifier.fillMaxSize().onSizeChanged(onViewSize).then(input)) {
             frame.value // subscribe: a new frame redraws
-            drawLatestFrame(latestFrame, FilterQuality.Low) { f ->
-                val dst = InputMapper.contentRect(IntSize(f.width, f.height), Rect(0f, 0f, size.width, size.height), state.stretch)
-                IntOffset(dst.left.roundToInt(), dst.top.roundToInt()) to IntSize(dst.width.roundToInt(), dst.height.roundToInt())
+            drawLatestFrame(latestFrame, FilterQuality.Low, orientation) { f ->
+                InputMapper.contentRect(orientation.orientedSize(IntSize(f.width, f.height)), Rect(0f, 0f, size.width, size.height), state.stretch)
             }
         }
     } else {
@@ -685,9 +692,7 @@ private fun Stage(
                         .onSizeChanged(onViewSize).then(input),
                 ) {
                     frame.value // subscribe: a new frame redraws
-                    drawLatestFrame(latestFrame, FilterQuality.None) {
-                        IntOffset.Zero to IntSize(size.width.roundToInt(), size.height.roundToInt())
-                    }
+                    drawLatestFrame(latestFrame, FilterQuality.None, orientation) { Rect(0f, 0f, size.width, size.height) }
                 }
             }
             VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight())
@@ -699,17 +704,32 @@ private fun Stage(
 /**
  * Draws the latest frame inside [VideoFrame.use], so a released bitmap is never touched. A frame released between
  * the read and the draw (a newer one was just published) is retried with the newer one.
+ *
+ * [placement] gives the rectangle of the image as displayed; with an [orientation] the frame is drawn flipped
+ * (first) and rotated about that rectangle's centre, like `SDL_RenderTextureRotated` in v5.0 `screen.c`.
  */
 private fun DrawScope.drawLatestFrame(
     latest: () -> VideoFrame?,
     quality: FilterQuality,
-    placement: (VideoFrame) -> Pair<IntOffset, IntSize>,
+    orientation: DisplayOrientation,
+    placement: (VideoFrame) -> Rect,
 ) {
     repeat(3) {
         val f = latest() ?: return
         val drawn = f.use { bitmap ->
-            val (offset, size) = placement(f)
-            drawImage(bitmap.asComposeImageBitmap(), dstOffset = offset, dstSize = size, filterQuality = quality)
+            val dst = placement(f)
+            // The un-rotated frame rectangle, centred on dst.
+            val w = if (orientation.swaps) dst.height else dst.width
+            val h = if (orientation.swaps) dst.width else dst.height
+            val center = dst.center
+            val offset = IntOffset((center.x - w / 2f).roundToInt(), (center.y - h / 2f).roundToInt())
+            val size = IntSize(w.roundToInt(), h.roundToInt())
+            withTransform({
+                if (orientation.quarterTurns != 0) rotate(orientation.degrees, center)
+                if (orientation.flip) scale(-1f, 1f, center)
+            }) {
+                drawImage(bitmap.asComposeImageBitmap(), dstOffset = offset, dstSize = size, filterQuality = quality)
+            }
         }
         if (drawn != null) return
     }
