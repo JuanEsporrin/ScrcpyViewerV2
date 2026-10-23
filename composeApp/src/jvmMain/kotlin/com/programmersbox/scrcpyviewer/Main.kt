@@ -30,6 +30,7 @@ import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
 import com.programmersbox.scrcpyviewer.media.AudioPlayer
+import com.programmersbox.scrcpyviewer.media.DelayedVideoSink
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
 import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
 import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
@@ -106,7 +107,10 @@ class AppGraph {
         newSession = { serial, values ->
             ScrcpySession(
                 serial, values, serverLauncher,
-                decoderFactory = { meta, session -> VideoDecoder(meta.codecId, session::publishFrame, session::publishFps) },
+                decoderFactory = { meta, session ->
+                    // video-buffer delays what is shown, not what is recorded (the recorder is another sink).
+                    DelayedVideoSink.forOptions(VideoDecoder(meta.codecId, session::publishFrame, session::publishFps), values)
+                },
                 audioFactory = { codecId, _ -> AudioPlayer.forOptions(codecId, values) },
                 scope = scope,
             )
