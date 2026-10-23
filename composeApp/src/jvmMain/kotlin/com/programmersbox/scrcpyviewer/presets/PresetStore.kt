@@ -3,8 +3,10 @@ package com.programmersbox.scrcpyviewer.presets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -27,6 +29,11 @@ class PresetStore(private val file: Path, scope: CoroutineScope) {
 
     val presets: StateFlow<List<Preset>> get() = _presets
     val defaultPresetId: StateFlow<String?> get() = _default
+
+    private val _persistenceError = MutableStateFlow<String?>(null)
+
+    /** Non-null when the file on disk could not be read or backed up; persisting is then disabled to protect it. */
+    val persistenceError: StateFlow<String?> get() = _persistenceError
 
     init {
         val loaded = load()
@@ -67,21 +74,34 @@ class PresetStore(private val file: Path, scope: CoroutineScope) {
 
     private fun mutate(block: () -> Unit) = synchronized(lock) { block(); save() }
 
-    private fun load(): StoreFile = try {
-        if (Files.exists(file)) json.decodeFromString(StoreFile.serializer(), Files.readString(file)) else StoreFile()
-    } catch (e: Exception) {
-        backUpCorrupt()
-        StoreFile()
-    }
-
-    private fun backUpCorrupt() {
-        try {
-            Files.move(file, file.resolveSibling(file.fileName.toString() + ".bak"), StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: Exception) {
+    private fun load(): StoreFile {
+        if (!Files.exists(file)) return StoreFile()
+        val text = try {
+            Files.readString(file)
+        } catch (e: IOException) {
+            _persistenceError.value = "Could not read ${file.fileName}: ${e.message}"
+            return StoreFile()
+        }
+        return try {
+            json.decodeFromString(StoreFile.serializer(), text)
+        } catch (e: SerializationException) {
+            backUpCorrupt(e)
+        } catch (e: IllegalArgumentException) {
+            backUpCorrupt(e)
         }
     }
 
+    private fun backUpCorrupt(cause: Exception): StoreFile {
+        try {
+            Files.move(file, file.resolveSibling(file.fileName.toString() + ".bak"), StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            _persistenceError.value = "${file.fileName} is unreadable (${cause.message}) and could not be backed up: ${e.message}"
+        }
+        return StoreFile()
+    }
+
     private fun save() {
+        if (_persistenceError.value != null) return
         file.toAbsolutePath().parent?.let { Files.createDirectories(it) }
         val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
         Files.writeString(tmp, json.encodeToString(StoreFile.serializer(), StoreFile(_presets.value, _default.value)))

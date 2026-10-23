@@ -7,6 +7,7 @@ import kotlinx.coroutines.SupervisorJob
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class PresetStoreTest {
@@ -54,5 +55,18 @@ class PresetStoreTest {
         Files.writeString(file, "garbage2")
         PresetStore(file, scope)
         assertEquals("garbage2", Files.readString(bak))
+    }
+
+    @Test
+    fun `failed backup leaves corrupt original untouched`() {
+        Files.writeString(file, "garbage")
+        val bak = file.resolveSibling("presets.json.bak")
+        Files.createDirectory(bak)
+        Files.writeString(bak.resolve("keep"), "x")
+        val s = PresetStore(file, scope)
+        s.upsert(a)
+        assertEquals("garbage", Files.readString(file))
+        assertEquals(listOf(a), s.presets.value)
+        assertNotNull(s.persistenceError.value)
     }
 }
