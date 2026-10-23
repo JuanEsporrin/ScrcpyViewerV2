@@ -23,7 +23,7 @@ enum class KeyInjectMode { Mixed, Text, Raw }
  * `mouse_sdk.c` and `keyboard_sdk.c` do for the SDK mouse and keyboard.
  *
  * [viewRect] is the area (in the pointer events' coordinates) the video is fitted into. The frame of [frameSize]
- * (the current session size, which changes on rotation) is letterboxed inside it, or stretched to fill it when
+ * (the size of the image on screen; it changes on rotation) is letterboxed inside it, or stretched to fill it when
  * [stretch] returns true. Device positions carry that frame size as the screen size.
  *
  * - Left button: `InjectTouch` with the mouse pointer id (-1). A press, hover or scroll on the letterbox bars is

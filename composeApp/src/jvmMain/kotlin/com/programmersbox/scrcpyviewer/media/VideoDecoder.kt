@@ -26,19 +26,33 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ImageInfo
 import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Decodes the scrcpy video stream with FFmpeg (JavaCPP) and converts frames to BGRA [ImageBitmap]s.
+ * Decodes the scrcpy video stream with FFmpeg (JavaCPP) and publishes every frame as a new, immutable BGRA
+ * [ImageBitmap].
  *
- * Like v5.0 `app/src/packet_merger.c`, an H.264/H.265 config packet is kept and prepended to the next media
- * packet (it is also sent on its own, as the demuxer does). Frames are converted with `sws_scale` into a native
- * BGRA buffer, copied into a reused byte array and installed into one of [POOL_SIZE] Skia bitmaps used in turn,
- * so the bitmap the UI is drawing is not overwritten by the next frame. The buffers are reallocated whenever the
- * frame size changes (a mid-stream session header, i.e. rotation, or a frame of another size).
+ * Config packets are never decoded on their own (v5.0 `decoder.c` ignores them). For H.264/H.265 the config packet
+ * is kept and prepended to the next media packet, like `app/src/packet_merger.c`; other codecs carry it in-band.
  *
- * Every frame is also passed to [onFrame] and the decoded rate (frames per second, measured over about one
- * second) to [onFps]. All calls come from the session's video reader thread; [close] may come from another
- * thread and is serialized with decoding.
+ * Each frame is converted with `sws_scale` straight into the pixels of a freshly allocated Skia [Bitmap], which is
+ * then made immutable and published through [frame] and [onFrame]. Nothing writes to a bitmap after it is
+ * published, so the UI can draw it on any thread without locking.
+ *
+ * Frame lifetime: the GC does not see Skia's native memory (one frame is up to ~16 MB), so a frame is released
+ * explicitly [RELEASE_DELAY_MS] after a newer frame replaced it. Drawing makes its own reference-counted
+ * `SkImage` from the bitmap at draw time, so only the read-then-draw step must fit in that window. A consumer
+ * that keeps a frame longer (screenshot, recording) must copy it. The current (last) frame is never released, and
+ * stays valid after [close] so it can be shown under the Disconnected scrim. The conversion
+ * context is recreated when the frame size or pixel format changes ([onSession] on rotation, or a frame of another
+ * size), and [frameSize] follows.
+ *
+ * The decoded rate is recomputed once a second from the frames of the last second (0 on a still screen with no
+ * frames, and 0 after [close]) and published through [fps] and [onFps]. Decoding calls come from the session's
+ * video reader thread; [close] may come from another thread and is serialized with decoding.
  */
 class VideoDecoder(
     private val codecId: Int,
@@ -60,35 +74,34 @@ class VideoDecoder(
         private set
 
     private val lock = Any()
-    private var closed = false
-    private var ctx: AVCodecContext? = null
-    private val packet: AVPacket = avcodec.av_packet_alloc()
-    private val avFrame: AVFrame = avutil.av_frame_alloc()
+    @Volatile private var closed = false
     private val mergeConfig = codecId == StreamProtocol.CODEC_H264 || codecId == StreamProtocol.CODEC_H265
     private var pendingConfig: ByteArray? = null
 
-    // Conversion state, reallocated by [ensureBuffers] when the size changes.
-    private var sws: SwsContext? = null
-    private var swsFormat = -1
-    private var bufWidth = 0
-    private var bufHeight = 0
-    private var native: BytePointer? = null
-    private val dstData = PointerPointer<BytePointer>(4)
-    private val dstLinesize = IntPointer(4L)
-    private var pixels = ByteArray(0)
-    private var bitmaps: List<Bitmap> = emptyList()
-    private var images: List<ImageBitmap> = emptyList()
-    private var next = 0
+    // Native state, allocated by [open] (all or nothing) and freed by [close].
+    private val ctx: AVCodecContext
+    private val packet: AVPacket
+    private val avFrame: AVFrame
+    private val dstData: PointerPointer<BytePointer>
+    private val dstLinesize: IntPointer
 
-    private var fpsWindowStart = clock()
-    private var fpsWindowFrames = 0
+    // Conversion context, recreated when the size or format changes.
+    private var sws: SwsContext? = null
+    private var swsWidth = 0
+    private var swsHeight = 0
+    private var swsFormat = -1
+
+    private class Retired(val bitmap: Bitmap, val at: Long)
+    private var current: Bitmap? = null
+    private val superseded = ArrayDeque<Retired>()
+
+    private val windowFrames = AtomicInteger()
+    @Volatile private var windowStart = clock()
+    private val fpsTask: ScheduledFuture<*>
     private var loggedSendError = false
+    private var loggedScaleError = false
 
     init {
-        open()
-    }
-
-    private fun open() {
         val avId = when (codecId) {
             StreamProtocol.CODEC_H264 -> avcodec.AV_CODEC_ID_H264
             StreamProtocol.CODEC_H265 -> avcodec.AV_CODEC_ID_HEVC
@@ -105,7 +118,20 @@ class VideoDecoder(
             avcodec.avcodec_free_context(c)
             throw IOException("Could not open the ${codecName(codecId)} decoder ($r)")
         }
+        val p = avcodec.av_packet_alloc()
+        val f = avutil.av_frame_alloc()
+        if (p == null || f == null) {
+            p?.let { avcodec.av_packet_free(it) }
+            f?.let { avutil.av_frame_free(it) }
+            avcodec.avcodec_free_context(c)
+            throw IOException("Out of memory for the decoder")
+        }
         ctx = c
+        packet = p
+        avFrame = f
+        dstData = PointerPointer(4)
+        dstLinesize = IntPointer(4L)
+        fpsTask = fpsTimer.scheduleAtFixedRate(::tickFps, 1, 1, TimeUnit.SECONDS)
     }
 
     override fun onMeta(meta: VideoCodecMeta) {
@@ -115,34 +141,29 @@ class VideoDecoder(
     override fun onSession(width: Int, height: Int): Unit = synchronized(lock) {
         if (closed) return
         _frameSize.value = IntSize(width, height)
-        // The next frame has the new size; reallocate the conversion buffers now.
-        ensureBuffers(width, height, swsFormat.takeIf { it >= 0 } ?: avutil.AV_PIX_FMT_YUV420P)
+        // The next frame has the new size; recreate the converter now.
+        ensureConverter(width, height, swsFormat.takeIf { it >= 0 } ?: avutil.AV_PIX_FMT_YUV420P)
     }
 
     override fun onPacket(p: MediaPacket): Unit = synchronized(lock) {
         if (closed) return
-        val data = if (mergeConfig) {
-            if (p.isConfig) {
-                pendingConfig = p.data
-                p.data
-            } else {
-                val config = pendingConfig
-                pendingConfig = null
-                if (config != null) config + p.data else p.data
-            }
-        } else p.data
-        decode(data, p)
+        if (p.isConfig) {
+            if (mergeConfig) pendingConfig = p.data
+            return
+        }
+        val config = pendingConfig
+        pendingConfig = null
+        decode(if (config != null) config + p.data else p.data, p)
     }
 
     private fun decode(data: ByteArray, p: MediaPacket) {
-        val c = ctx ?: return
         if (avcodec.av_new_packet(packet, data.size) < 0) throw IOException("Out of memory for a video packet")
         try {
             packet.data().put(data, 0, data.size)
-            packet.pts(if (p.isConfig) avutil.AV_NOPTS_VALUE else p.ptsUs)
-            packet.dts(packet.pts())
+            packet.pts(p.ptsUs)
+            packet.dts(p.ptsUs)
             if (p.isKeyFrame) packet.flags(packet.flags() or avcodec.AV_PKT_FLAG_KEY)
-            val sent = avcodec.avcodec_send_packet(c, packet)
+            val sent = avcodec.avcodec_send_packet(ctx, packet)
             if (sent < 0) {
                 // A corrupt packet is not fatal: the next key frame recovers.
                 if (!loggedSendError) log.log(System.Logger.Level.WARNING, "Could not send a video packet ($sent)")
@@ -152,7 +173,7 @@ class VideoDecoder(
         } finally {
             avcodec.av_packet_unref(packet)
         }
-        while (avcodec.avcodec_receive_frame(c, avFrame) >= 0) {
+        while (avcodec.avcodec_receive_frame(ctx, avFrame) >= 0) {
             try {
                 publish(avFrame)
             } finally {
@@ -165,88 +186,113 @@ class VideoDecoder(
         val w = f.width()
         val h = f.height()
         if (w <= 0 || h <= 0) return
-        if (w != bufWidth || h != bufHeight || f.format() != swsFormat) {
-            ensureBuffers(w, h, f.format())
+        if (w != swsWidth || h != swsHeight || f.format() != swsFormat) {
+            ensureConverter(w, h, f.format())
             _frameSize.value = IntSize(w, h)
         }
-        val ctx = sws ?: return
-        swscale.sws_scale(ctx, f.data(), f.linesize(), 0, h, dstData, dstLinesize)
-        val stride = dstLinesize.get(0)
-        val src = native!!
-        if (stride == w * 4) {
-            src.position(0).get(pixels, 0, w * h * 4)
-        } else {
-            for (y in 0 until h) src.position(y.toLong() * stride).get(pixels, y * w * 4, w * 4)
-            src.position(0)
+        val converter = sws ?: return
+        val bitmap = Bitmap()
+        if (!bitmap.allocPixels(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE))) {
+            bitmap.close()
+            throw IOException("Could not allocate a ${w}x$h frame")
         }
-        val index = next
-        next = (next + 1) % POOL_SIZE
-        bitmaps[index].installPixels(pixels)
-        val image = images[index]
+        val pixmap = checkNotNull(bitmap.peekPixels()) { "frame bitmap has no pixels" }
+        try {
+            // sws_scale writes straight into the bitmap's pixel memory: one copy per frame.
+            dstData.put(0L, NativeAddress(pixmap.addr, pixmap.rowBytes.toLong() * h))
+            dstLinesize.put(0L, pixmap.rowBytes) // 0L: put(Int, Int) would resolve to the vararg put(int...)
+            val rows = swscale.sws_scale(converter, f.data(), f.linesize(), 0, h, dstData, dstLinesize)
+            if (rows <= 0) {
+                if (!loggedScaleError) log.log(System.Logger.Level.WARNING, "Could not convert a ${w}x$h frame ($rows)")
+                loggedScaleError = true
+                bitmap.close() // never published
+                return
+            }
+        } finally {
+            pixmap.close()
+        }
+        bitmap.notifyPixelsChanged()
+        bitmap.setImmutable()
+        val image = bitmap.asComposeImageBitmap()
+        retire(now = clock())
+        current?.let { superseded.addLast(Retired(it, clock())) }
+        current = bitmap
         decodedFrames++
+        windowFrames.incrementAndGet()
         _frame.value = image
         onFrame(image)
-        countFps()
     }
 
-    private fun countFps() {
-        fpsWindowFrames++
-        val now = clock()
-        val elapsed = now - fpsWindowStart
-        if (elapsed >= 1_000_000_000L) {
-            val value = fpsWindowFrames * 1e9 / elapsed
-            fpsWindowStart = now
-            fpsWindowFrames = 0
-            _fps.value = value
-            onFps(value)
+    /** Releases the frames that were replaced more than [RELEASE_DELAY_MS] ago. */
+    private fun retire(now: Long) {
+        while (true) {
+            val oldest = superseded.firstOrNull() ?: return
+            if (now - oldest.at < RELEASE_DELAY_MS * 1_000_000) return
+            superseded.removeFirst().bitmap.close()
         }
     }
 
-    /** (Re)allocates the sws context, the native BGRA buffer, the byte array and the bitmap pool for [w]x[h]. */
-    private fun ensureBuffers(w: Int, h: Int, format: Int) {
+    private fun tickFps() {
+        val now = clock()
+        val frames = windowFrames.getAndSet(0)
+        val elapsed = now - windowStart
+        windowStart = now
+        if (elapsed <= 0) return
+        val value = if (closed) 0.0 else frames * 1e9 / elapsed
+        _fps.value = value
+        runCatching { onFps(value) }
+    }
+
+    private fun ensureConverter(w: Int, h: Int, format: Int) {
         if (w <= 0 || h <= 0) return
-        if (w == bufWidth && h == bufHeight && format == swsFormat && sws != null) return
+        if (w == swsWidth && h == swsHeight && format == swsFormat && sws != null) return
         sws = swscale.sws_getCachedContext(
             sws, w, h, format, w, h, avutil.AV_PIX_FMT_BGRA, swscale.SWS_BILINEAR, null, null, null as DoublePointer?,
         ) ?: throw IOException("Could not create the color converter for ${w}x$h")
+        swsWidth = w
+        swsHeight = h
         swsFormat = format
-        if (w != bufWidth || h != bufHeight) {
-            native?.let { avutil.av_free(it) }
-            val size = avutil.av_image_get_buffer_size(avutil.AV_PIX_FMT_BGRA, w, h, 1)
-            val buf = BytePointer(avutil.av_malloc(size.toLong())).capacity(size.toLong())
-            native = buf
-            avutil.av_image_fill_arrays(dstData, dstLinesize, buf, avutil.AV_PIX_FMT_BGRA, w, h, 1)
-            pixels = ByteArray(w * h * 4)
-            // The old bitmaps are not closed: the UI may still be drawing the last one. They are freed by the GC.
-            val info = ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE)
-            bitmaps = List(POOL_SIZE) { Bitmap().apply { allocPixels(info) } }
-            images = bitmaps.map { it.asComposeImageBitmap() }
-            next = 0
-            bufWidth = w
-            bufHeight = h
-        }
     }
 
     override fun close(): Unit = synchronized(lock) {
         if (closed) return
         closed = true
-        ctx?.let { avcodec.avcodec_free_context(it) }
-        ctx = null
+        fpsTask.cancel(false)
+        _fps.value = 0.0
+        runCatching { onFps(0.0) }
+        avcodec.avcodec_free_context(ctx)
         avcodec.av_packet_free(packet)
         avutil.av_frame_free(avFrame)
         sws?.let { swscale.sws_freeContext(it) }
         sws = null
-        native?.let { avutil.av_free(it) }
-        native = null
         dstData.close()
         dstLinesize.close()
-        // The bitmaps stay alive: the UI may still draw the last frame (e.g. under the Disconnected scrim).
+        // The current frame stays valid (the Disconnected scrim draws it); the replaced ones go after the delay.
+        val pending = superseded.toList()
+        superseded.clear()
+        if (pending.isNotEmpty()) {
+            fpsTimer.schedule({ pending.forEach { it.bitmap.close() } }, RELEASE_DELAY_MS, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /** A non-owning view of native memory owned by someone else (here, a Skia bitmap's pixels). */
+    private class NativeAddress(addr: Long, size: Long) : BytePointer() {
+        init {
+            address = addr
+            limit = size
+            capacity = size
+        }
     }
 
     companion object {
-        /** Bitmaps used in turn; the one on screen is never the one being written. */
-        const val POOL_SIZE = 3
+        /** How long a replaced frame stays valid (12 frames at 60 fps). */
+        const val RELEASE_DELAY_MS = 200L
         private val log = System.getLogger("scrcpyviewer.VideoDecoder")
+
+        /** One daemon thread recomputes the fps of every decoder once a second. */
+        private val fpsTimer = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "video-fps").apply { isDaemon = true }
+        }
 
         fun codecName(codecId: Int): String = when (codecId) {
             StreamProtocol.CODEC_H264 -> "H.264"

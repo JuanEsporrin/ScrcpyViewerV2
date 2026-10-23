@@ -231,7 +231,9 @@ fun MirrorWindow(
     val mapper = remember(session) {
         InputMapper.forOptions(
             values,
-            frameSize = { session.frameSize.value },
+            // Map against the image on screen (the canvas letterboxes that one), which can lag the session size
+            // for a frame after a rotation.
+            frameSize = { session.frames.value?.let { IntSize(it.width, it.height) } ?: session.frameSize.value },
             viewRect = { Rect(0f, 0f, viewSize.width.toFloat(), viewSize.height.toFloat()) },
             stretch = { stretch && currentFit },
         )

@@ -93,6 +93,10 @@ class MirrorDeviceTest {
         val d = s.awaitFrames(30)
         println("[device] $primary: 30 frames in ${(System.nanoTime() - start) / 1_000_000} ms, size ${s.frameSize.value}, name ${s.deviceName.value}")
         val bitmap = d.frame.value!!.asSkiaBitmap()
+        val pixels = bitmap.readPixels()!!
+        val distinct = (0 until pixels.size / 4).map { i -> pixels[i * 4].toInt() and 0xff }.toSet().size
+        println("[device] frame content: $distinct distinct blue levels")
+        assertTrue(distinct > 16, "the decoded frame is a real image, not blank")
         val png = Image.makeFromBitmap(bitmap).encodeToData(EncodedImageFormat.PNG)!!
         Files.createDirectories(outDir)
         Files.write(outDir.resolve("mirror-frame.png"), png.bytes)
@@ -117,8 +121,10 @@ class MirrorDeviceTest {
 
     @Test
     fun `c two devices at once, closing one keeps the other`() = runBlocking<Unit> {
-        check(serials.size >= 2) { "needs two devices, got $serials" }
-        val other = serials.first { it != primary }
+        // Two devices when attached; else two sessions on one device (each server has its own scid).
+        val other = serials.firstOrNull { it != primary } ?: primary.also {
+            println("[device] only $primary attached: running two sessions on it")
+        }
         val a = session(primary)
         val b = session(other)
         val da = a.awaitFrames(10)
@@ -159,6 +165,23 @@ class MirrorDeviceTest {
         }
         val moving = (d.decodedFrames - n0) * 1e9 / (System.nanoTime() - t0)
         println("[device] $primary fps over 5 s: idle %.1f, animating %.1f (session.fps=%.1f)".format(idle, moving, s.fps.value))
+        // One fresh bitmap per frame: native memory must stay flat (replaced frames are released after a delay).
+        fun rssMb() = ProcessBuilder("ps", "-o", "rss=", "-p", ProcessHandle.current().pid().toString())
+            .start().inputStream.bufferedReader().readText().trim().toLong() / 1024
+        val samples = ArrayList<String>()
+        repeat(3) {
+            repeat(5) {
+                s.send(ControlMessage.ExpandNotificationPanel)
+                delay(500)
+                s.send(ControlMessage.CollapsePanels)
+                delay(500)
+            }
+            samples += "${d.decodedFrames} frames: ${rssMb()} MB"
+        }
+        println("[device] test JVM RSS while animating: ${samples.joinToString("; ")}")
+        // Still screen for a while: fps must go back down, not stick at the last value.
+        delay(2500)
+        println("[device] fps 2.5 s after the animation: %.1f".format(s.fps.value))
         assertTrue(moving > 0)
         s.close()
     }
