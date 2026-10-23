@@ -54,6 +54,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -67,6 +69,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -174,6 +177,9 @@ data class MirrorUiState(
     /** `display-orientation`: how the frame is turned on screen. */
     val orientation: DisplayOrientation = DisplayOrientation.R0,
 )
+
+/** Milliseconds on the monotonic clock the click dots use. */
+internal fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
 
 /** "● REC mm:ss" for a recording running for [elapsedNanos]. */
 fun recordingLabel(elapsedNanos: Long): String {
@@ -371,6 +377,11 @@ fun MirrorWindow(
         }
     }
     val captured = capture?.active?.collectAsState()?.value == true
+    // show-touches only shows physical touches on the device; mark the injected clicks in the window (not for the
+    // captured UHID mouse, whose pointer is hidden and has no position on the frame).
+    val clickIndicator = remember(session) {
+        if ("show-touches" in e && capture == null) ClickIndicator(mapper::displayedRect) else null
+    }
 
     // UHID devices live as long as the session: created first thing (the control queue holds them until the
     // socket is up), destroyed when the window lets go of the session.
@@ -549,11 +560,15 @@ fun MirrorWindow(
                             when {
                                 "no-control" in e -> Unit
                                 capture != null -> capture.pointer(it, awtWindow, viewSize, density.density)
-                                else -> send(mapper.pointer(it))
+                                else -> {
+                                    clickIndicator?.onPointer(it, monotonicMillis())
+                                    send(mapper.pointer(it))
+                                }
                             }
                         },
                         onViewSize = { viewSize = it },
                         onStageSize = { stage = it },
+                        clickIndicator = clickIndicator,
                     )
                 }
                 SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 80.dp, bottom = 44.dp))
@@ -594,6 +609,8 @@ fun MirrorContent(
     modifier: Modifier = Modifier,
     /** The frame to draw, read at draw time ([frame] only triggers the redraw). */
     latestFrame: () -> VideoFrame? = { frame.value },
+    /** `show-touches`: the click dots drawn over the frame. */
+    clickIndicator: ClickIndicator? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxSize()) {
@@ -605,7 +622,7 @@ fun MirrorContent(
                     .background(state.background ?: colors.surfaceDim)
                     .onSizeChanged(onStageSize),
             ) {
-                Stage(state, frame, latestFrame, onPointer, onViewSize)
+                Stage(state, frame, latestFrame, onPointer, onViewSize, clickIndicator)
                 if (state.status == SessionStatus.Disconnected || state.status == SessionStatus.Failed) {
                     DisconnectedScrim(state, onReconnect)
                 } else if (state.status == SessionStatus.Connecting || state.frameSize == null) {
@@ -656,8 +673,27 @@ private fun Stage(
     latestFrame: () -> VideoFrame?,
     onPointer: (PointerEvent) -> Unit,
     onViewSize: (IntSize) -> Unit,
+    clickIndicator: ClickIndicator?,
 ) {
     val pointer by rememberUpdatedState(onPointer)
+    // Redraws every frame while a click dot fades out.
+    var now by remember { mutableLongStateOf(monotonicMillis()) }
+    val releaseTime = clickIndicator?.releaseTime
+    LaunchedEffect(clickIndicator, releaseTime) {
+        if (clickIndicator == null) return@LaunchedEffect
+        do {
+            withFrameNanos { now = monotonicMillis() }
+        } while (clickIndicator.isFading(now))
+    }
+    val dotColor = MaterialTheme.colorScheme.primary
+    val dotRing = MaterialTheme.colorScheme.onPrimary
+    fun DrawScope.drawClickDot() {
+        val dot = clickIndicator?.state(now) ?: return
+        val radius = 12.dp.toPx()
+        drawCircle(dotColor.copy(alpha = 0.4f * dot.alpha), radius = radius, center = dot.position)
+        // A thin light ring keeps the dot visible on content close to the primary color.
+        drawCircle(dotRing.copy(alpha = 0.6f * dot.alpha), radius = radius, center = dot.position, style = Stroke(1.5.dp.toPx()))
+    }
     val input = Modifier.pointerInput(Unit) {
         awaitPointerEventScope {
             while (true) {
@@ -675,6 +711,7 @@ private fun Stage(
             drawLatestFrame(latestFrame, FilterQuality.Low, orientation) { f ->
                 InputMapper.contentRect(orientation.orientedSize(IntSize(f.width, f.height)), Rect(0f, 0f, size.width, size.height), state.stretch)
             }
+            drawClickDot()
         }
     } else {
         // 1:1 (one frame pixel per screen pixel) in a scroll container.
@@ -689,6 +726,7 @@ private fun Stage(
                 ) {
                     frame.value // subscribe: a new frame redraws
                     drawLatestFrame(latestFrame, FilterQuality.None, orientation) { Rect(0f, 0f, size.width, size.height) }
+                    drawClickDot()
                 }
             }
             VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight())

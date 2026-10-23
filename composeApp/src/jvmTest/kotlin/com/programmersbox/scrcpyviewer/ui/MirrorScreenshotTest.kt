@@ -8,7 +8,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntSize
 import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
+import com.programmersbox.scrcpyviewer.ui.mirror.ClickIndicator
 import com.programmersbox.scrcpyviewer.ui.mirror.DisplayOrientation
+import com.programmersbox.scrcpyviewer.ui.mirror.InputMapper
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorContent
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorUiState
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
@@ -68,13 +72,13 @@ class MirrorScreenshotTest {
         command = "scrcpy -s 39121FDJH004AB --max-size=1920",
     )
 
-    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state) {
+    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state, clickIndicator: ClickIndicator? = null) {
         val out = outDir.resolve(name)
         val frame = mutableStateOf<VideoFrame?>(syntheticFrame())
         renderToPng(1280, 800, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    MirrorContent(state, frame, {}, {}, {}, {}, {}, {})
+                    MirrorContent(state, frame, {}, {}, {}, {}, {}, {}, clickIndicator = clickIndicator)
                 }
             }
         }
@@ -108,4 +112,13 @@ class MirrorScreenshotTest {
     fun `mirror display-orientation flip0`() = render(
         "mirror-orientation-flip0.png", ThemeMode.Light, state.copy(orientation = DisplayOrientation.Flip0),
     )
+
+    @Test
+    fun `mirror show-touches click dot`() {
+        // A press on the clock of the 1344x2992 frame, letterboxed in the 1152x712 stage of a 1280x800 window.
+        val view = Rect(0f, 0f, 1152f, 712f)
+        val mapper = InputMapper(frameSize = { IntSize(1344, 2992) }, viewRect = { view })
+        val dots = ClickIndicator(mapper::displayedRect).apply { press(Offset(560f, 120f)) }
+        render("mirror-show-touches.png", ThemeMode.Light, clickIndicator = dots)
+    }
 }

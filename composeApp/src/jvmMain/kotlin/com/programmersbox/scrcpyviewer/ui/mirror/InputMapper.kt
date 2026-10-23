@@ -170,6 +170,13 @@ class InputMapper(
         )
     }
 
+    /** Where the frame is drawn in the view (letterbox excluded), or null before the first frame. */
+    fun displayedRect(): Rect? {
+        val size = frameSize() ?: return null
+        if (size.width <= 0 || size.height <= 0) return null
+        return contentRect(orientation.orientedSize(size), viewRect(), stretch()).takeIf { it.width > 0f && it.height > 0f }
+    }
+
     /** Device position of a view point; null outside the frame (unless [clamp]) or before the first frame. */
     fun toDevice(point: Offset, clamp: Boolean): Position? {
         val size = frameSize() ?: return null
