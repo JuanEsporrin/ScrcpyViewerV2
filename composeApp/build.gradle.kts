@@ -123,9 +123,10 @@ val downloadBundledTools = tasks.register("downloadBundledTools") {
 
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(downloadBundledTools) }
 
-tasks.matching { it.name == "run" }.configureEach {
+// Every JavaExec task (run, hot-reload, IDE-generated run tasks) gets the tools and the dev lookup dir.
+tasks.withType<JavaExec>().configureEach {
     dependsOn(downloadBundledTools)
-    (this as? JavaExec)?.systemProperty("scrcpyviewer.bundledDir", bundledDir.asFile.absolutePath)
+    systemProperty("scrcpyviewer.bundledDir", bundledDir.asFile.absolutePath)
 }
 
 // Offscreen screenshot tests are slow; run them only with -Pscreenshots.

@@ -10,11 +10,13 @@ import java.security.MessageDigest
  * Locates the bundled scrcpy-server and adb.
  *
  * Packaged apps read from [resourcesDir] (`compose.application.resources.dir`). Dev runs fall back to
- * `composeApp/bundled/<common|host folder>` via the `scrcpyviewer.bundledDir` system property.
+ * `composeApp/bundled/<common|host folder>` via the `scrcpyviewer.bundledDir` system property, then to
+ * `bundled` / `composeApp/bundled` found from [workingDir] (IDE launches set no property).
  */
 class BundledTools(
     resourcesDir: Path? = System.getProperty("compose.application.resources.dir")?.let { Paths.get(it) },
     private val dataDir: Path,
+    workingDir: Path = Paths.get(System.getProperty("user.dir")),
 ) {
     val serverVersion: String = "5.0"
 
@@ -23,6 +25,11 @@ class BundledTools(
         System.getProperty("scrcpyviewer.bundledDir")?.let { Paths.get(it) }?.let {
             add(it.resolve("common"))
             add(it.resolve(hostDirName()))
+        }
+        // IDE launches set neither property; fall back to composeApp/bundled near the working directory.
+        for (bundled in devBundledDirs(workingDir)) {
+            add(bundled.resolve("common"))
+            add(bundled.resolve(hostDirName()))
         }
     }
 
@@ -55,12 +62,26 @@ class BundledTools(
         searchDirs.map { it.resolve(name) }.firstOrNull { Files.isRegularFile(it) }
 
     private fun find(name: String): Path =
-        findOrNull(name) ?: error("Bundled file '$name' not found in $searchDirs")
+        findOrNull(name) ?: error(
+            "$name is missing. Run ./gradlew :composeApp:downloadBundledTools, then restart. Searched: ${searchDirs.joinToString().ifEmpty { "(no directories)" }}",
+        )
 
     private fun sha256(path: Path): String =
         MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)).joinToString("") { "%02x".format(it) }
 
     private companion object {
+        /** `bundled/` and `composeApp/bundled/` under [start] and up to three parents. */
+        fun devBundledDirs(start: Path): List<Path> {
+            val dirs = mutableListOf<Path>()
+            dirs.add(start.resolve("bundled"))
+            var dir: Path? = start.toAbsolutePath()
+            repeat(4) {
+                dir?.let { dirs.add(it.resolve("composeApp").resolve("bundled")) }
+                dir = dir?.parent
+            }
+            return dirs.distinct()
+        }
+
         fun isWindows() = System.getProperty("os.name").lowercase().contains("win")
 
         fun hostDirName(): String {

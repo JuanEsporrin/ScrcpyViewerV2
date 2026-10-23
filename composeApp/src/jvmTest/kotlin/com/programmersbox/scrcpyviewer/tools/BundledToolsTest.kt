@@ -48,4 +48,51 @@ class BundledToolsTest {
             System.clearProperty("scrcpyviewer.bundledDir")
         }
     }
+
+    private fun bundledAt(root: java.nio.file.Path): java.nio.file.Path {
+        val common = Files.createDirectories(root.resolve("common"))
+        return Files.writeString(common.resolve("scrcpy-server"), "x")
+    }
+
+    @Test
+    fun `serverJar falls back to composeApp bundled under working dir`() {
+        val wd = Files.createTempDirectory("wd")
+        val expected = bundledAt(wd.resolve("composeApp/bundled"))
+        val tools = BundledTools(null, Files.createTempDirectory("data"), wd)
+        assertEquals(expected, tools.serverJar)
+    }
+
+    @Test
+    fun `serverJar falls back to bundled in working dir`() {
+        val wd = Files.createTempDirectory("wd")
+        val expected = bundledAt(wd.resolve("bundled"))
+        assertEquals(expected, BundledTools(null, Files.createTempDirectory("data"), wd).serverJar)
+    }
+
+    @Test
+    fun `serverJar fallback walks up from a subdirectory`() {
+        val root = Files.createTempDirectory("root")
+        val expected = bundledAt(root.resolve("composeApp/bundled"))
+        val sub = Files.createDirectories(root.resolve("composeApp/build/run"))
+        assertEquals(expected, BundledTools(null, Files.createTempDirectory("data"), sub).serverJar)
+    }
+
+    @Test
+    fun `packaged resources dir wins over dev fallback`() {
+        val wd = Files.createTempDirectory("wd")
+        bundledAt(wd.resolve("composeApp/bundled"))
+        val res = fakeResources()
+        assertEquals(res.resolve("scrcpy-server"), BundledTools(res, Files.createTempDirectory("data"), wd).serverJar)
+    }
+
+    @Test
+    fun `missing server gives actionable message`() {
+        val wd = Files.createTempDirectory("wd")
+        val e = kotlin.test.assertFailsWith<IllegalStateException> {
+            BundledTools(null, Files.createTempDirectory("data"), wd).serverJar
+        }
+        val msg = e.message.orEmpty()
+        assertTrue("scrcpy-server is missing. Run ./gradlew :composeApp:downloadBundledTools, then restart." in msg, msg)
+        assertTrue(wd.resolve("bundled").toString() in msg, msg)
+    }
 }
