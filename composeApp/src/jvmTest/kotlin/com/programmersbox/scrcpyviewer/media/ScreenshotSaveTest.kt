@@ -23,7 +23,9 @@ class ScreenshotSaveTest {
     @OptIn(ExperimentalPathApi::class)
     @AfterTest
     fun cleanUp() {
-        dir.deleteRecursively()
+        // Best effort: on Windows a file still open elsewhere (e.g. by a leaked native handle) cannot be deleted,
+        // and a temp directory left behind must not fail the test.
+        runCatching { dir.deleteRecursively() }
     }
 
     /** A 4x3 BGRA bitmap: left half red, right half blue. */

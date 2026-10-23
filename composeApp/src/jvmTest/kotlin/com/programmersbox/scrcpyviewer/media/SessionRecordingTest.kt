@@ -28,11 +28,17 @@ class SessionRecordingTest {
     @OptIn(ExperimentalPathApi::class)
     @AfterTest
     fun cleanUp() {
-        dir.deleteRecursively()
+        // Close every recorder before deleting the files it writes.
+        recordings.forEach { it.stop(); it.join(5_000) }
+        // Best effort: on Windows a file still open elsewhere (e.g. by a leaked native handle) cannot be deleted,
+        // and a temp directory left behind must not fail the test.
+        runCatching { dir.deleteRecursively() }
     }
 
+    private val recordings = CopyOnWriteArrayList<SessionRecording>()
+
     private fun recording(name: String, format: String = "mp4") =
-        SessionRecording(dir.resolve(name), format, 0) { _, r -> ended += r }
+        SessionRecording(dir.resolve(name), format, 0) { _, r -> ended += r }.also { recordings += it }
 
     private fun SessionRecording.feedVideo() {
         val s = loadH264Sample()

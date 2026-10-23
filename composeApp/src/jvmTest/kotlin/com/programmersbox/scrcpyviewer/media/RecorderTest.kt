@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CopyOnWriteArrayList
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import org.bytedeco.ffmpeg.avcodec.AVPacket
@@ -53,12 +55,17 @@ class RecorderTest {
     private val dir: Path = Files.createTempDirectory("recorder-test")
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val sessions = CopyOnWriteArrayList<ScrcpySession>()
 
     @OptIn(ExperimentalPathApi::class)
     @AfterTest
     fun cleanUp() {
+        // Finish every session (and so its recorder) before deleting the files it writes.
+        runBlocking { sessions.forEach { withTimeoutOrNull(15_000) { it.close() } } }
         scope.cancel()
-        dir.deleteRecursively()
+        // Best effort: on Windows a file still open elsewhere (e.g. by a leaked native handle) cannot be deleted,
+        // and a temp directory left behind must not fail the test.
+        runCatching { dir.deleteRecursively() }
     }
 
     // ---- Samples (sample.h264 from SampleStreams.kt, the Ogg Opus sample of Task 13) ----
@@ -126,8 +133,11 @@ class RecorderTest {
     private fun record(file: Path, format: String, video: VideoCodecMeta?, audio: Int?, orientation: Int = 0, block: Recorder.() -> Unit): RecordResult {
         var ended: RecordResult? = null
         val recorder = Recorder(file, format, video, audio, orientation, onEnded = { ended = it })
-        recorder.block()
-        recorder.close()
+        try {
+            recorder.block()
+        } finally {
+            recorder.close()
+        }
         return assertNotNull(ended, "onEnded is called before close() returns")
     }
 
@@ -278,7 +288,7 @@ class RecorderTest {
         decoderFactory = { _, _ -> RecordingVideoSink() },
         audioFactory = { _, _ -> null },
         scope = scope,
-    )
+    ).also { sessions += it }
 
     /** Device side of the video socket, after the codec id and session header ([videoOut]). */
     private class FakeVideo(val out: DataOutputStream) {

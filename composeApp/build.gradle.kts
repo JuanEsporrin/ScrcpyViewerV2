@@ -53,6 +53,8 @@ compose.desktop {
             packageName = "ScrcpyViewer"
             packageVersion = "1.0.0"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
+            // Debian package names must be lowercase.
+            linux { packageName = "scrcpyviewer" }
         }
     }
 }
