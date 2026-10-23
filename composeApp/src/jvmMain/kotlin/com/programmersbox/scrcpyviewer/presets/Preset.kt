@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.presets
 
+import com.programmersbox.scrcpyviewer.options.OptionCatalog
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -37,7 +38,10 @@ internal fun JsonObject.toOptionValues(): OptionValues {
     return OptionValues(map)
 }
 
-/** Serializes [OptionValues] as a JSON object: boolean flags are `true`, valued options are strings. */
+/**
+ * Serializes [OptionValues] as a JSON object: boolean flags are `true`, valued options are strings. Flags that are
+ * not in [OptionCatalog] are dropped when reading.
+ */
 object OptionValuesSerializer : KSerializer<OptionValues> {
     private val delegate = JsonObject.serializer()
     override val descriptor: SerialDescriptor = delegate.descriptor
@@ -49,7 +53,9 @@ object OptionValuesSerializer : KSerializer<OptionValues> {
 
     override fun deserialize(decoder: Decoder): OptionValues {
         require(decoder is JsonDecoder) { "OptionValuesSerializer works with JSON only" }
-        return (decoder.decodeJsonElement() as? JsonObject
-            ?: throw IllegalArgumentException("options must be an object")).toOptionValues()
+        val obj = decoder.decodeJsonElement() as? JsonObject
+            ?: throw IllegalArgumentException("options must be an object")
+        // Options the catalog no longer has (e.g. a retired one) are dropped: they could not be edited away.
+        return JsonObject(obj.filterKeys { OptionCatalog.byFlag(it) != null }).toOptionValues()
     }
 }

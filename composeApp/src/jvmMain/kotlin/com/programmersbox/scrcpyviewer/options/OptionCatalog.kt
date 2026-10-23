@@ -29,6 +29,7 @@ import com.programmersbox.scrcpyviewer.options.OptionType.Text
  * Not listed on purpose:
  * - the hidden options from the global constraints (`--otg`, `-s`, `--list-*`, `--render-driver`, ...);
  * - `--gamepad` (and its alias `-G`): the JVM has no gamepad API, so the mirror window could not forward one;
+ * - `--push-target`: there is no drag-and-drop file push (app install / file push is a non-goal);
  * - the short-only aliases `-K` and `-M`, which are `--keyboard=uhid` and `--mouse=uhid` without OTG, and so are
  *   already covered by the [Choice] of those options.
  */
@@ -214,8 +215,6 @@ object OptionCatalog {
         // Client: scrcpy.c sends a START_APP control message after connect.
         client("start-app", "Start app", Device, Text,
             "Start an Android app by its exact package name. Prefix '?' to match the app name, '+' to force-stop first."),
-        client("push-target", "Push target", Device, Text,
-            "Target directory for files pushed by drag and drop. Default is /sdcard/Download/."),
 
         // ---- Window (SDL window options mapped to the mirror window) ----
         window("always-on-top", "Always on top", Flag, "Keep the mirror window above other windows."),

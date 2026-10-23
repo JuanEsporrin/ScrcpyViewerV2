@@ -8,14 +8,17 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class OptionCatalogTest {
-    /** Hidden options from Global Constraints, without leading dashes, plus `gamepad` (the JVM has no gamepad API). */
+    /**
+     * Hidden options from Global Constraints, without leading dashes, plus `gamepad` (the JVM has no gamepad API)
+     * and `push-target` (no drag-and-drop file push: a non-goal).
+     */
     private val hidden = listOf(
         "otg", "serial", "s", "d", "e", "select-usb", "select-tcpip", "tcpip",
         "list-apps", "list-cameras", "list-camera-sizes", "list-displays", "list-encoders",
         "h", "help", "v", "version", "V", "verbosity",
         "v4l2-sink", "v4l2-buffer", "render-driver", "no-mipmaps", "hwdec", "shortcut-mod",
         "pause-on-exit", "no-window", "window-borderless", "disable-screensaver",
-        "no-terminal-title", "kill-adb-on-close", "gamepad",
+        "no-terminal-title", "kill-adb-on-close", "gamepad", "push-target",
     )
 
     /** Every `.longopt` in scrcpy v5.0 app/src/cli.c, in table order. */

@@ -228,6 +228,18 @@ class ScrcpySessionTest {
     }
 
     @Test
+    fun `start-app sends StartApp after turn-screen-off`() = runBlocking {
+        val launcher = LocalPairLauncher()
+        val s = session(launcher, values = mapOf("turn-screen-off" to null, "start-app" to "+com.android.settings"))
+        s.await(SessionStatus.Running)
+        val expected = ControlMessage.SetDisplayPower(false).serialize() + ControlMessage.StartApp("+com.android.settings").serialize()
+        val got = ByteArray(expected.size)
+        withContext(Dispatchers.IO) { DataInputStream(launcher.device.await().control!!.getInputStream()).readFully(got) }
+        assertContentEquals(expected, got)
+        s.close()
+    }
+
+    @Test
     fun `session headers mid-stream update frameSize and reach sinks`() = runBlocking {
         val launcher = LocalPairLauncher()
         val sink = RecordingVideoSink()

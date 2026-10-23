@@ -356,6 +356,8 @@ class ScrcpySession(
         }
         _status.update { if (it == SessionStatus.Connecting) SessionStatus.Running else it }
         if ("turn-screen-off" in values.entries) send(ControlMessage.SetDisplayPower(false))
+        // scrcpy.c: START_APP right after connecting, after turn-screen-off.
+        values.entries["start-app"]?.takeIf { it.isNotBlank() }?.let { send(ControlMessage.StartApp(it)) }
     }
 
     /** `record` option: a failure is reported in [recordingResults]; mirroring goes on. */
