@@ -1,15 +1,11 @@
 package com.programmersbox.scrcpyviewer.presets
 
+import com.programmersbox.scrcpyviewer.state.JsonFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import java.io.IOException
-import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 @Serializable
@@ -20,8 +16,8 @@ private data class StoreFile(val presets: List<Preset> = emptyList(), val defaul
  * new instance always sees the latest state; [scope] is reserved for the owner's lifecycle.
  */
 @Suppress("unused")
-class PresetStore(private val file: Path, scope: CoroutineScope) {
-    private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+class PresetStore(file: Path, scope: CoroutineScope) {
+    private val file = JsonFile(file, StoreFile.serializer()) { StoreFile() }
     private val lock = Any()
 
     private val _presets: MutableStateFlow<List<Preset>>
@@ -30,13 +26,11 @@ class PresetStore(private val file: Path, scope: CoroutineScope) {
     val presets: StateFlow<List<Preset>> get() = _presets
     val defaultPresetId: StateFlow<String?> get() = _default
 
-    private val _persistenceError = MutableStateFlow<String?>(null)
-
     /** Non-null when the file on disk could not be read or backed up; persisting is then disabled to protect it. */
-    val persistenceError: StateFlow<String?> get() = _persistenceError
+    val persistenceError: StateFlow<String?> get() = this.file.error
 
     init {
-        val loaded = load()
+        val loaded = this.file.load()
         _presets = MutableStateFlow(loaded.presets)
         _default = MutableStateFlow(loaded.defaultPresetId?.takeIf { id -> loaded.presets.any { it.id == id } })
     }
@@ -74,41 +68,5 @@ class PresetStore(private val file: Path, scope: CoroutineScope) {
 
     private fun mutate(block: () -> Unit) = synchronized(lock) { block(); save() }
 
-    private fun load(): StoreFile {
-        if (!Files.exists(file)) return StoreFile()
-        val text = try {
-            Files.readString(file)
-        } catch (e: IOException) {
-            _persistenceError.value = "Could not read ${file.fileName}: ${e.message}"
-            return StoreFile()
-        }
-        return try {
-            json.decodeFromString(StoreFile.serializer(), text)
-        } catch (e: SerializationException) {
-            backUpCorrupt(e)
-        } catch (e: IllegalArgumentException) {
-            backUpCorrupt(e)
-        }
-    }
-
-    private fun backUpCorrupt(cause: Exception): StoreFile {
-        try {
-            Files.move(file, file.resolveSibling(file.fileName.toString() + ".bak"), StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: Exception) {
-            _persistenceError.value = "${file.fileName} is unreadable (${cause.message}) and could not be backed up: ${e.message}"
-        }
-        return StoreFile()
-    }
-
-    private fun save() {
-        if (_persistenceError.value != null) return
-        file.toAbsolutePath().parent?.let { Files.createDirectories(it) }
-        val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
-        Files.writeString(tmp, json.encodeToString(StoreFile.serializer(), StoreFile(_presets.value, _default.value)))
-        try {
-            Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING)
-        }
-    }
+    private fun save() = file.save(StoreFile(_presets.value, _default.value))
 }
