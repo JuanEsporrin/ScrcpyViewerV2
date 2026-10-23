@@ -96,21 +96,29 @@ class FakeAdb(
         val count = listOf("video=false", "audio=false", "control=false").count { it !in a }
         val forward = "tunnel_forward=true" in a
         thread(isDaemon = true, name = "fake-device") {
-            for (i in 0 until count) {
-                val s = if (forward) forwardListener!!.accept() else Socket(InetAddress.getLoopbackAddress(), reversePort!!)
-                deviceSockets += s
-                if (i == 0) {
-                    val out = DataOutputStream(s.getOutputStream())
-                    if (forward) out.writeByte(0)
-                    val name = ByteArray(StreamProtocol.DEVICE_NAME_FIELD_LENGTH)
-                    deviceName.toByteArray().copyInto(name)
-                    out.write(name)
-                    out.flush()
-                }
+            try {
+                simulate(count, forward)
+            } catch (_: java.io.IOException) {
+                // The host closed the forward listener or sockets first (forward --remove, cleanup): device gone.
             }
-            connected.countDown()
         }
         return process
+    }
+
+    private fun simulate(count: Int, forward: Boolean) {
+        for (i in 0 until count) {
+            val s = if (forward) forwardListener!!.accept() else Socket(InetAddress.getLoopbackAddress(), reversePort!!)
+            deviceSockets += s
+            if (i == 0) {
+                val out = DataOutputStream(s.getOutputStream())
+                if (forward) out.writeByte(0)
+                val name = ByteArray(StreamProtocol.DEVICE_NAME_FIELD_LENGTH)
+                deviceName.toByteArray().copyInto(name)
+                out.write(name)
+                out.flush()
+            }
+        }
+        connected.countDown()
     }
 
     fun shellCommand(): List<String> = calls.first { "app_process" in it }
@@ -120,4 +128,25 @@ fun fakeTools(): BundledTools {
     val dir = Files.createTempDirectory("bundled")
     Files.write(dir.resolve("scrcpy-server"), byteArrayOf(1, 2, 3))
     return BundledTools(resourcesDir = dir, dataDir = Files.createTempDirectory("data"))
+}
+
+/**
+ * Captures the `scrcpyviewer.*` System.Logger (JUL) output instead of printing it, so intentional warnings and
+ * stack traces do not clutter test output. Tests may inspect [records].
+ */
+object TestLogs {
+    val records = CopyOnWriteArrayList<java.util.logging.LogRecord>()
+    // Strong reference: JUL only keeps weak references to loggers.
+    private val root = java.util.logging.Logger.getLogger("scrcpyviewer")
+
+    init {
+        root.useParentHandlers = false
+        root.addHandler(object : java.util.logging.Handler() {
+            override fun publish(record: java.util.logging.LogRecord) { records += record }
+            override fun flush() {}
+            override fun close() {}
+        })
+    }
+
+    fun install() = Unit
 }

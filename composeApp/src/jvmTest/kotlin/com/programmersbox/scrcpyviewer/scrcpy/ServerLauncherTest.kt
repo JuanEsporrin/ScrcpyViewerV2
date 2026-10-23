@@ -16,6 +16,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ServerLauncherTest {
+    init {
+        TestLogs.install()
+    }
+
     private val serial = "SER123"
 
     private fun launcher(adb: FakeAdb) = ServerLauncher(adb, fakeTools(), stopTimeoutMs = 100)
@@ -50,7 +54,7 @@ class ServerLauncherTest {
 
             assertNotNull(conn.video); assertNotNull(conn.audio); assertNotNull(conn.control)
             assertEquals("Pixel 8", conn.deviceMeta.name)
-            assertTrue(conn.control!!.tcpNoDelay)
+            assertTrue(conn.control.tcpNoDelay)
         } finally {
             conn.cleanup()
         }
@@ -147,5 +151,24 @@ class ServerLauncherTest {
         withTimeout(5_000) { start.cancel(); start.join() }
         assertTrue(adb.processes.single().destroyed)
         assertTrue(adb.calls.indexOfCmd("reverse", "--remove") >= 0)
+    }
+
+    @Test
+    fun `falls back to forward when no port can be listened on after reverse`() = runBlocking {
+        val adb = FakeAdb()
+        val launcher = ServerLauncher(adb, fakeTools(), stopTimeoutMs = 100, listen = { throw IOException("in use") })
+        val conn = withTimeout(10_000) {
+            launcher.start(serial, OptionValues(mapOf("port" to "27183:27185")))
+        }
+        try {
+            val reverses = adb.calls.filter { it.getOrNull(2) == "reverse" && it[3] != "--remove" }
+            val removes = adb.calls.filter { it.getOrNull(2) == "reverse" && it[3] == "--remove" }
+            assertTrue(reverses.isNotEmpty() && reverses.size == removes.size, "calls: ${adb.calls}")
+            assertTrue(adb.calls.indexOfCmd("forward") > adb.calls.lastIndexOf(removes.last()))
+            assertTrue("tunnel_forward=true" in adb.shellCommand())
+            assertEquals("Pixel 8", conn.deviceMeta.name)
+        } finally {
+            conn.cleanup()
+        }
     }
 }

@@ -113,6 +113,8 @@ class ServerLauncher(
     private val connectDelayMs: Long = 100,
     /** How long cleanup waits for the server to exit after closing the sockets before killing it (server.c: 1 s). */
     private val stopTimeoutMs: Long = 1_000,
+    /** Opens the reverse-tunnel listener on a local port (a seam for tests). */
+    private val listen: (port: Int) -> ServerSocket = ::listenLoopback,
 ) : ConnectionStarter {
 
     override suspend fun start(serial: String, values: OptionValues): ServerConnection = withContext(Dispatchers.IO) {
@@ -180,32 +182,40 @@ class ServerLauncher(
             openForward(range)
         }
 
-        /** False when `adb reverse` itself fails (it would fail on any port). */
+        /**
+         * False when `adb reverse` itself fails (it would fail on any port) or no port in [range] can be listened on;
+         * the caller then falls back to `adb forward`, as `sc_adb_tunnel_open` does.
+         */
         private suspend fun openReverse(range: IntRange): Boolean {
             var from = range.first
             while (from <= range.last) {
-                val p = PortAllocator.next(from, range.last)
+                val p = try {
+                    PortAllocator.next(from, range.last)
+                } catch (_: IOException) {
+                    break
+                }
                 val r = adb.exec("-s", serial, "reverse", "localabstract:$socketName", "tcp:$p")
                 if (r.exitCode != 0) {
                     PortAllocator.release(p)
                     log.log(System.Logger.Level.WARNING, "'adb reverse' failed, fallback to 'adb forward': ${r.stderr.trim()}")
                     return false
                 }
-                val ss = ServerSocket()
                 try {
-                    ss.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), p), LISTEN_BACKLOG)
-                    serverSocket = ss
+                    serverSocket = listen(p)
                     port = p
                     tunnelOpen.set(true)
                     return true
                 } catch (e: IOException) {
-                    ss.close()
                     adb.exec("-s", serial, "reverse", "--remove", "localabstract:$socketName")
                     PortAllocator.release(p)
                     from = p + 1
                 }
             }
-            throw IOException("Could not listen on any port in ${range.first}..${range.last}")
+            log.log(
+                System.Logger.Level.WARNING,
+                "Could not listen on any port in ${range.first}..${range.last}, fallback to 'adb forward'",
+            )
+            return false
         }
 
         private suspend fun openForward(range: IntRange) {
@@ -357,6 +367,17 @@ class ServerLauncher(
     }
 
     companion object {
+        private fun listenLoopback(port: Int): ServerSocket {
+            val ss = ServerSocket()
+            try {
+                ss.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), LISTEN_BACKLOG)
+            } catch (e: IOException) {
+                ss.close()
+                throw e
+            }
+            return ss
+        }
+
         const val DEVICE_SERVER_PATH = "/data/local/tmp/scrcpy-server.jar"
         const val SERVER_CLASS = "com.genymobile.scrcpy.Server"
         private const val SOCKET_NAME_PREFIX = "scrcpy_"

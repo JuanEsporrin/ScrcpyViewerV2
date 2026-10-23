@@ -7,6 +7,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -109,6 +111,7 @@ class ScrcpySession(
     )
     /** Parent of the stream readers and the control writer; cancelled on teardown. */
     private val streamsJob = SupervisorJob(job)
+    private val streamsScope = CoroutineScope(sessionScope.coroutineContext + streamsJob)
 
     private val controlEnabled = "no-control" !in values.entries
     private val controlQueue = Channel<ControlMessage>(CONTROL_QUEUE_CAPACITY)
@@ -125,10 +128,12 @@ class ScrcpySession(
     private val tornDown = AtomicBoolean(false)
     private val teardownDone = CompletableDeferred<Unit>()
     @Volatile private var connection: ServerConnection? = null
-    private val connectJob: Job = sessionScope.launch { connect() }
+    // Both jobs are LAZY and started at the end of init, so teardown (which may run on another thread as soon as
+    // the launch fails) never sees an unassigned property.
+    private val connectJob: Job = sessionScope.launch(start = CoroutineStart.LAZY) { connect() }
 
     /** Tears down when [scope] is cancelled before [close] (sockets, process and tunnel are never leaked). */
-    private val cancelGuard: Job = sessionScope.launch {
+    private val cancelGuard: Job = sessionScope.launch(start = CoroutineStart.LAZY) {
         try {
             awaitCancellation()
         } finally {
@@ -228,7 +233,7 @@ class ScrcpySession(
 
     /** Runs [block] under [streamsJob]; its end (or failure) disconnects the session. */
     private fun launchStream(name: String, disconnectOnReturn: Boolean = true, block: suspend () -> Unit) {
-        sessionScope.launch(streamsJob) {
+        streamsScope.launch {
             try {
                 block()
                 if (disconnectOnReturn) disconnected(null)
@@ -348,14 +353,20 @@ class ScrcpySession(
         if (!tornDown.compareAndSet(false, true)) return // already closed
         _error.value = message
         _status.value = SessionStatus.Failed
-        sessionScope.launch { teardown() }
+        launchTeardown()
     }
 
     private fun disconnected(reason: String?) {
         if (!tornDown.compareAndSet(false, true)) return
         if (reason != null) _error.value = reason
         _status.update { if (it == SessionStatus.Failed) it else SessionStatus.Disconnected }
-        sessionScope.launch { teardown() }
+        launchTeardown()
+    }
+
+    /** ATOMIC: once [tornDown] is set, teardown must run even if [scope] was cancelled meanwhile. */
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun launchTeardown() {
+        sessionScope.launch(start = CoroutineStart.ATOMIC) { teardown() }
     }
 
     /** Runs exactly once (guarded by [tornDown]). */
@@ -377,6 +388,16 @@ class ScrcpySession(
             cancelGuard.cancel()
             teardownDone.complete(Unit)
             job.complete()
+        }
+    }
+
+    init {
+        cancelGuard.start()
+        connectJob.start()
+        if (!job.isActive && tornDown.compareAndSet(false, true)) {
+            // scope is already cancelled, so the LAZY jobs may never have run; teardown still runs (ATOMIC).
+            _status.value = SessionStatus.Disconnected
+            launchTeardown()
         }
     }
 

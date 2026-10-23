@@ -79,6 +79,10 @@ private fun DataOutputStream.writePacket(pts: Long, data: ByteArray) {
 }
 
 class ScrcpySessionTest {
+    init {
+        TestLogs.install()
+    }
+
     private val errors = CopyOnWriteArrayList<Throwable>()
     private val parentJob = Job()
     private val parent = CoroutineScope(parentJob + Dispatchers.Default + CoroutineExceptionHandler { _, t -> errors += t })
@@ -262,5 +266,45 @@ class ScrcpySessionTest {
         assertEquals(1, launcher.cleanups)
         assertEquals(SessionStatus.Disconnected, s.status.value)
         withTimeout(5_000) { s.close() } // already torn down: returns
+    }
+
+    @Test
+    fun `a launcher failing immediately never hangs close`() = runBlocking {
+        repeat(200) {
+            val s = session(ConnectionStarter { _, _ -> throw java.io.IOException("boom") })
+            withTimeout(2_000) { s.close() }
+            assertTrue(s.status.value == SessionStatus.Failed || s.status.value == SessionStatus.Disconnected)
+        }
+    }
+
+    @Test
+    fun `parent cancel racing a reader EOF cleans up exactly once`() = runBlocking {
+        repeat(50) {
+            val launcher = LocalPairLauncher()
+            val scopeJob = Job()
+            val s = ScrcpySession("SER", OptionValues(emptyMap()), launcher, { _, _ -> null }, { _, _ -> null },
+                CoroutineScope(scopeJob + Dispatchers.Default))
+            s.await(SessionStatus.Running)
+            val dev = launcher.device.await()
+            val eof = Thread { dev.video!!.close() }
+            eof.start()
+            scopeJob.cancel()
+            eof.join()
+            withTimeout(5_000) { s.close() }
+            withTimeout(5_000) { scopeJob.join() }
+            assertEquals(1, launcher.cleanups)
+            assertEquals(SessionStatus.Disconnected, s.status.value)
+            listOfNotNull(dev.audio, dev.control).forEach { it.close() }
+        }
+    }
+
+    @Test
+    fun `a session on an already cancelled scope does not hang close`() = runBlocking {
+        val launcher = LocalPairLauncher()
+        val s = ScrcpySession("SER", OptionValues(emptyMap()), launcher, { _, _ -> null }, { _, _ -> null },
+            CoroutineScope(Job().apply { cancel() }))
+        withTimeout(5_000) { s.close() }
+        assertEquals(SessionStatus.Disconnected, s.status.value)
+        assertEquals(0, launcher.cleanups)
     }
 }
