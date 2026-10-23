@@ -42,4 +42,17 @@ class PresetStoreTest {
         Files.writeString(file, "garbage")
         assertEquals(emptyList(), PresetStore(file, scope).presets.value)
     }
+
+    @Test
+    fun `corrupt file is backed up before being overwritten`() {
+        Files.writeString(file, "garbage")
+        val s = PresetStore(file, scope)
+        s.upsert(a)
+        val bak = file.resolveSibling("presets.json.bak")
+        assertEquals("garbage", Files.readString(bak))
+        assertEquals(listOf(a), PresetStore(file, scope).presets.value)
+        Files.writeString(file, "garbage2")
+        PresetStore(file, scope)
+        assertEquals("garbage2", Files.readString(bak))
+    }
 }

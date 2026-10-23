@@ -10,10 +10,10 @@ data class ImportItem(
 )
 
 object ImportPlan {
-    /** Builds one item per incoming preset. A name clash (case-insensitive) defaults to [ConflictChoice.KeepBoth]. */
+    /** Builds one item per incoming preset. A name clash (case-insensitive) defaults to [ConflictChoice.Replace]. */
     fun plan(existing: List<Preset>, incoming: List<Preset>): List<ImportItem> = incoming.map { p ->
         val clash = existing.firstOrNull { it.name.equals(p.name, ignoreCase = true) }
-        ImportItem(p, clash, ConflictChoice.KeepBoth, include = true)
+        ImportItem(p, clash, ConflictChoice.Replace, include = true)
     }
 
     fun apply(existing: List<Preset>, items: List<ImportItem>): List<Preset> {

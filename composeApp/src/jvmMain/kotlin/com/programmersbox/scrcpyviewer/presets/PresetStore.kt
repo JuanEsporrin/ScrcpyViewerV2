@@ -70,7 +70,15 @@ class PresetStore(private val file: Path, scope: CoroutineScope) {
     private fun load(): StoreFile = try {
         if (Files.exists(file)) json.decodeFromString(StoreFile.serializer(), Files.readString(file)) else StoreFile()
     } catch (e: Exception) {
+        backUpCorrupt()
         StoreFile()
+    }
+
+    private fun backUpCorrupt() {
+        try {
+            Files.move(file, file.resolveSibling(file.fileName.toString() + ".bak"), StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: Exception) {
+        }
     }
 
     private fun save() {

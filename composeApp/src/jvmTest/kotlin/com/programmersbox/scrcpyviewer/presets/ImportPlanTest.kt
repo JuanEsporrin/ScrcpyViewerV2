@@ -48,4 +48,10 @@ class ImportPlanTest {
         }
         assertEquals(listOf("Fast", "Other"), ImportPlan.apply(existing, items).map { it.name })
     }
+
+    @Test
+    fun `plan defaults conflicts to Replace`() {
+        val items = ImportPlan.plan(existing, listOf(p("n1", "Fast")))
+        assertEquals(ConflictChoice.Replace, items[0].choice)
+    }
 }
