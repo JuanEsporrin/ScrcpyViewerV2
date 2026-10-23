@@ -4,6 +4,7 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 val LightColors: ColorScheme = lightColorScheme(
     primary = Color(0xFF006A6A),
@@ -82,3 +83,11 @@ val DarkColors: ColorScheme = darkColorScheme(
     surfaceContainerHigh = Color(0xFF252B2B),
     surfaceContainerHighest = Color(0xFF2F3636),
 )
+
+private val LightWarn = Color(0xFF8A5100)
+private val DarkWarn = Color(0xFFFFB870)
+
+/** Amber for "needs attention" states (Material 3 has no warning role). */
+@androidx.compose.runtime.Composable
+fun warnColor(): Color =
+    if (androidx.compose.material3.MaterialTheme.colorScheme.surface.luminance() < 0.5f) DarkWarn else LightWarn

@@ -1,0 +1,358 @@
+package com.programmersbox.scrcpyviewer.ui.devices
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.programmersbox.scrcpyviewer.adb.Device
+import com.programmersbox.scrcpyviewer.adb.DeviceState
+import com.programmersbox.scrcpyviewer.options.OptionCatalog
+import com.programmersbox.scrcpyviewer.options.OptionGroup
+import com.programmersbox.scrcpyviewer.options.OptionSpec
+import com.programmersbox.scrcpyviewer.ui.common.CopyButton
+import com.programmersbox.scrcpyviewer.ui.common.OptionRow
+import com.programmersbox.scrcpyviewer.ui.theme.warnColor
+
+@Composable
+fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier) {
+    val state by viewModel.state.collectAsState()
+    DevicesContent(
+        state = state,
+        onSelect = viewModel::select,
+        onOpen = viewModel::openDevice,
+        onQuery = viewModel::setQuery,
+        onGroup = viewModel::setGroup,
+        onToggle = viewModel::toggle,
+        onValue = viewModel::setValue,
+        onSave = viewModel::save,
+        onSaveAsNew = viewModel::saveAsNew,
+        onMirror = viewModel::mirror,
+        modifier = modifier,
+    )
+}
+
+/** Stateless Devices screen (Concept C: device column, searchable option grid, command footer). */
+@Composable
+fun DevicesContent(
+    state: DevicesUiState,
+    onSelect: (String) -> Unit,
+    onOpen: (String) -> Unit,
+    onQuery: (String) -> Unit,
+    onGroup: (OptionGroup?) -> Unit,
+    onToggle: (String, Boolean) -> Unit,
+    onValue: (String, String) -> Unit,
+    onSave: () -> Unit,
+    onSaveAsNew: (String) -> Unit,
+    onMirror: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier.fillMaxSize()) {
+        DeviceColumn(state, onSelect, onOpen)
+        VerticalRule()
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            if (state.selectedSerial == null) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("Select a device to choose its options", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                OptionsPane(state, onQuery, onGroup, onToggle, onValue, Modifier.weight(1f))
+                Footer(state, onSave, onSaveAsNew, onMirror)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VerticalRule() {
+    Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+}
+
+@Composable
+private fun DeviceColumn(state: DevicesUiState, onSelect: (String) -> Unit, onOpen: (String) -> Unit) {
+    Column(
+        Modifier.width(270.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            if (state.adbConnected) deviceSummary(state.devices) else "Devices",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp),
+        )
+        when {
+            !state.adbConnected -> Row(
+                Modifier.padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Starting adb…", style = MaterialTheme.typography.bodyMedium)
+            }
+            state.devices.isEmpty() -> Text(
+                "No devices. Connect a device with USB debugging on.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(4.dp),
+            )
+            else -> Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                state.devices.forEach { device ->
+                    DeviceRow(device, device.serial == state.selectedSerial, { onSelect(device.serial) }, { onOpen(device.serial) })
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DeviceRow(device: Device, selected: Boolean, onClick: () -> Unit, onDoubleClick: () -> Unit) {
+    val shape = RoundedCornerShape(12.dp)
+    val dot = when (device.state) {
+        DeviceState.Device -> MaterialTheme.colorScheme.primary
+        DeviceState.Unauthorized -> warnColor()
+        DeviceState.Offline, DeviceState.Other -> MaterialTheme.colorScheme.error
+    }
+    val hint = when (device.state) {
+        DeviceState.Device -> null
+        DeviceState.Unauthorized -> "Accept the USB debugging prompt on the device"
+        DeviceState.Offline -> "Reconnect the cable or run adb reconnect"
+        DeviceState.Other -> device.rawState
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface)
+            .then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
+            .combinedClickable(onClick = onClick, onDoubleClick = onDoubleClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(dot))
+        Column(Modifier.weight(1f)) {
+            val title = deviceTitle(device)
+            if (title != device.serial) Text(title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                device.serial,
+                style = if (title == device.serial) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (hint != null) {
+                Text(hint, style = MaterialTheme.typography.labelSmall, color = dot)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionsPane(
+    state: DevicesUiState,
+    onQuery: (String) -> Unit,
+    onGroup: (OptionGroup?) -> Unit,
+    onToggle: (String, Boolean) -> Unit,
+    onValue: (String, String) -> Unit,
+    modifier: Modifier,
+) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Options", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = onQuery,
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                placeholder = { Text("Search ${OptionCatalog.all.size} options") },
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.width(260.dp),
+            )
+        }
+        GroupChips(state.groupFilter, onGroup)
+        val scroll = rememberScrollState()
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (state.visibleOptions.isEmpty()) {
+                Text("No options match.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
+            } else {
+                val (left, right) = remember(state.visibleOptions) { splitColumns(state.visibleOptions) }
+                Row(Modifier.fillMaxSize().verticalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                    OptionColumn(left, state, onToggle, onValue, Modifier.weight(1f))
+                    OptionColumn(right, state, onToggle, onValue, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GroupChips(selected: OptionGroup?, onGroup: (OptionGroup?) -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        FilterChip(selected == null, { onGroup(null) }, label = { Text("All") })
+        OptionGroup.entries.forEach { g ->
+            FilterChip(selected == g, { onGroup(g) }, label = { Text(g.label) })
+        }
+    }
+}
+
+private data class GroupBlock(val group: OptionGroup, val options: List<OptionSpec>)
+
+/** Splits the visible options into two columns of whole groups, balanced by row count. */
+private fun splitColumns(options: List<OptionSpec>): Pair<List<GroupBlock>, List<GroupBlock>> {
+    val blocks = options.groupBy { it.group }.map { GroupBlock(it.key, it.value) }.sortedBy { it.group.ordinal }
+    val total = blocks.sumOf { it.options.size + 1 }
+    val left = ArrayList<GroupBlock>()
+    var count = 0
+    for (b in blocks) {
+        val size = b.options.size + 1
+        // Put a group on the left while that keeps the left column closer to half than leaving it out.
+        if (left.isEmpty() || kotlin.math.abs(count + size - total / 2.0) <= kotlin.math.abs(count - total / 2.0)) {
+            left += b
+            count += size
+        }
+    }
+    return left to blocks.filter { it !in left }
+}
+
+@Composable
+private fun OptionColumn(
+    blocks: List<GroupBlock>,
+    state: DevicesUiState,
+    onToggle: (String, Boolean) -> Unit,
+    onValue: (String, String) -> Unit,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        blocks.forEach { block ->
+            Text(
+                block.group.label.uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+            )
+            block.options.forEach { spec ->
+                val checked = spec.flag in state.values.entries
+                OptionRow(
+                    spec = spec,
+                    checked = checked,
+                    value = state.values.entries[spec.flag],
+                    error = state.errors[spec.flag],
+                    onCheckedChange = { onToggle(spec.flag, it) },
+                    onValueChange = { onValue(spec.flag, it) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Footer(state: DevicesUiState, onSave: () -> Unit, onSaveAsNew: (String) -> Unit, onMirror: () -> Unit) {
+    var naming by remember { mutableStateOf(false) }
+    val modified = state.presetLabel.endsWith("(modified)")
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(
+            Modifier.fillMaxWidth().padding(top = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AssistChip(onClick = {}, label = { Text("Preset: ${state.presetLabel}") })
+            if (modified) {
+                if (state.hasBasePreset) TextButton(onSave) { Text("Save") }
+            }
+            if (modified || !state.hasBasePreset) {
+                TextButton({ naming = true }) { Text("Save as new preset") }
+            }
+            Spacer(Modifier.weight(1f))
+            Button(onClick = onMirror, enabled = state.canMirror) { Text("Mirror") }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                SelectionContainer {
+                    Text(
+                        state.command,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
+            CopyButton(text = { state.command })
+        }
+    }
+    if (naming) SaveAsDialog(onDismiss = { naming = false }, onConfirm = { onSaveAsNew(it); naming = false })
+}
+
+@Composable
+private fun SaveAsDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Save as new preset") },
+        text = {
+            OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Preset name") })
+        },
+        confirmButton = { TextButton({ onConfirm(name) }, enabled = name.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onDismiss) { Text("Cancel") } },
+    )
+}

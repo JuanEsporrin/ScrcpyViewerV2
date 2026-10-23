@@ -125,3 +125,10 @@ tasks.matching { it.name == "run" }.configureEach {
     dependsOn(downloadBundledTools)
     (this as? JavaExec)?.systemProperty("scrcpyviewer.bundledDir", bundledDir.asFile.absolutePath)
 }
+
+// Offscreen screenshot tests are slow; run them only with -Pscreenshots.
+tasks.matching { it.name == "jvmTest" }.configureEach {
+    (this as Test).filter {
+        if (project.hasProperty("screenshots")) includeTestsMatching("*ScreenshotTest") else excludeTestsMatching("*ScreenshotTest")
+    }
+}
