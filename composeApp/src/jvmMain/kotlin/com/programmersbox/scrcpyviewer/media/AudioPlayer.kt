@@ -32,9 +32,14 @@ interface AudioOutput : AutoCloseable {
 
 /** A [SourceDataLine] on the default output device, opened with a buffer of [requestedBytes]. */
 class LineOutput(format: AudioFormat, requestedBytes: Int) : AudioOutput {
-    private val line: SourceDataLine = AudioSystem.getSourceDataLine(format).apply {
-        open(format, requestedBytes)
-        start()
+    private val line: SourceDataLine = AudioSystem.getSourceDataLine(format).also { l ->
+        try {
+            l.open(format, requestedBytes)
+            l.start()
+        } catch (t: Throwable) {
+            l.close()
+            throw t
+        }
     }
     override val bufferBytes: Int get() = line.bufferSize
     override fun write(buf: ByteArray, len: Int) {
@@ -81,7 +86,7 @@ class AudioPlayer(
         ?: throw IOException("No FFmpeg decoder for ${codecName(codecId)}")
 
     /** The playback buffer, filled by the decoder and drained by the playback thread. */
-    val jitter = JitterBuffer(FRAME_BYTES, SAMPLE_RATE, targetFrames = bufferMs.coerceAtLeast(0) * SAMPLE_RATE / 1000)
+    internal val jitter = JitterBuffer(FRAME_BYTES, SAMPLE_RATE, targetFrames = bufferMs.coerceAtLeast(0) * SAMPLE_RATE / 1000)
 
     /** PCM frames (per channel) produced by the decoder and resampler. */
     @Volatile var decodedFrames: Long = 0
@@ -90,6 +95,7 @@ class AudioPlayer(
     private val lock = Any()
     @Volatile private var closed = false
     private var config: ByteArray? = null
+    private var openFailure: IOException? = null
 
     // Native state, allocated on the first media packet ([openDecoder]) and freed by [close].
     private var ctx: AVCodecContext? = null
@@ -143,7 +149,16 @@ class AudioPlayer(
             if (ctx == null) config = p.data
             return
         }
-        if (ctx == null) openDecoder()
+        if (openFailure != null) return
+        if (ctx == null) {
+            try {
+                openDecoder()
+            } catch (e: IOException) {
+                // Thrown once (the session then removes this sink); later packets are ignored.
+                openFailure = e
+                throw e
+            }
+        }
         decode(p)
     }
 
@@ -222,9 +237,10 @@ class AudioPlayer(
         val frames = minOf(ret, maxOut)
         swrOut!!.get(pcm, 0, frames * FRAME_BYTES)
         decodedFrames += frames
-        jitter.push(pcm, frames, inFrames)?.let { diff ->
-            val r = swresample.swr_set_compensation(s, diff, JitterBuffer.compensationDistance(SAMPLE_RATE))
-            if (r < 0) log.log(System.Logger.Level.WARNING, "Resampling compensation failed ($r)") else jitter.compensationApplied(diff)
+        val pts = f.pts().takeIf { it != avutil.AV_NOPTS_VALUE && it >= 0 }
+        jitter.push(pcm, frames, inFrames, pts)?.let { c ->
+            val r = swresample.swr_set_compensation(s, c.sampleDelta, c.distance)
+            if (r < 0) log.log(System.Logger.Level.WARNING, "Resampling compensation failed ($r)") else jitter.compensationApplied(c)
         }
     }
 
@@ -365,12 +381,17 @@ class AudioRingBuffer(private val frameBytes: Int, val capacity: Int) {
 }
 
 /**
- * Playback buffering between the decoder ([push]) and the output ([pull]), after v5.0 `audio_regulator.c`.
+ * Playback buffering between the decoder ([push]) and the output ([pull]), a port of v5.0 `audio_regulator.c`.
  *
  * Playback starts once [targetFrames] are buffered; until then [pull] returns silence. On underrun the missing part
- * is silence and the buffer re-buffers up to the target before playing again. On overrun the oldest frames are
- * dropped: beyond the ring capacity, and beyond `target + 10 ms` while buffering or `target * 1.1 + 60 ms` while
- * playing. While playing, [push] smooths the buffering level and once per second of input returns the swresample
+ * is silence and playback goes on: no frame is dropped when the late frames arrive, the clock compensation absorbs
+ * the delay (the inserted silence counts as buffering right away). On overrun the oldest frames are dropped: beyond
+ * the ring capacity, and beyond `target + 10 ms` before playback starts or `target * 1.1 + 60 ms` once playing.
+ *
+ * A pts jump of more than 100 ms (silence the device did not capture) is a discontinuity: the buffer is padded with
+ * silence up to the target and the regulation restarts with no compensation.
+ *
+ * Once playing, [push] smooths the buffering level and once per second of input returns the swresample
  * compensation (in frames over [compensationDistance]) that moves it back toward the target.
  *
  * Every call takes one short lock (a copy of at most a chunk), so neither side ever waits on the other for long.
@@ -382,9 +403,9 @@ class JitterBuffer(
     capacityFrames: Int = targetFrames + sampleRate,
 ) {
     data class Stats(
-        /** Pulls that ran short after playback had started (each one re-buffers). */
+        /** Pulls that ran short after audio was received. */
         val underruns: Long,
-        /** Silent frames played because of underruns. */
+        /** Silent frames inserted because of underruns. */
         val underrunFrames: Long,
         /** Frames dropped on overrun. */
         val droppedFrames: Long,
@@ -392,10 +413,15 @@ class JitterBuffer(
         val playedFrames: Long,
     )
 
+    /** `swr_set_compensation(sampleDelta, distance)` to apply. */
+    data class Compensation(val sampleDelta: Int, val distance: Int)
+
     private val lock = Any()
     private val ring = AudioRingBuffer(frameBytes, capacityFrames)
-    private var playing = false
-    private var restarted = false
+    private var played = false
+    private var received = false
+    /** Silence inserted by [pull] since the last [push] (only counted once something was received). */
+    private var underflow = 0
     private var underruns = 0L
     private var underrunFrames = 0L
     private var droppedFrames = 0L
@@ -406,91 +432,114 @@ class JitterBuffer(
     private var avgCount = 0
     private var framesSinceResync = 0
     private var compensationActive = false
+    private var nextExpectedPts = 0L
 
     val available: Int get() = synchronized(lock) { ring.available }
-    val isPlaying: Boolean get() = synchronized(lock) { playing }
+    /** Playback has started (it never stops: underruns insert silence). */
+    val isPlaying: Boolean get() = synchronized(lock) { played }
 
     fun stats(): Stats = synchronized(lock) { Stats(underruns, underrunFrames, droppedFrames, playedFrames) }
 
     /**
-     * Adds [frames] frames from [pcm] (produced from [inputFrames] decoded frames; they differ while compensating).
-     * Returns a new compensation to apply, or null to keep the current one.
+     * Adds [frames] frames from [pcm], produced from [inputFrames] decoded frames (they differ while compensating)
+     * with presentation time [ptsUs] (null: unknown, no discontinuity check). Returns a compensation to apply, or
+     * null to keep the current one.
      */
-    fun push(pcm: ByteArray, frames: Int, inputFrames: Int = frames): Int? = synchronized(lock) {
+    fun push(pcm: ByteArray, frames: Int, inputFrames: Int = frames, ptsUs: Long? = null): Compensation? = synchronized(lock) {
+        var result: Compensation? = null
+        if (ptsUs != null) {
+            if (nextExpectedPts != 0L && ptsUs - nextExpectedPts > DISCONTINUITY_US) {
+                // Typically silence that was not captured: adjust the buffering to the target directly.
+                val canRead = ring.available
+                if (inputFrames + canRead < targetFrames) ring.writeSilence(targetFrames - canRead - inputFrames)
+                avg = targetFrames.toDouble()
+                result = Compensation(0, 0)
+                compensationActive = false
+                framesSinceResync = 0
+                underflow = 0
+            }
+            nextExpectedPts = ptsUs + inputFrames * 1_000_000L / sampleRate
+        }
+
         var offset = 0
         var count = frames
-        var dropped = 0
         if (count > ring.capacity) {
-            // A single push larger than the whole ring: keep its newest part.
-            dropped += count - ring.capacity
+            // Very unlikely: a single push larger than the whole ring; keep its newest part.
             offset = (count - ring.capacity) * frameBytes
             count = ring.capacity
         }
+        var dropped = 0
         val overflow = count - ring.free
-        if (overflow > 0) dropped += ring.read(null, 0, overflow)
+        if (overflow > 0) dropped += ring.read(null, 0, overflow) // drop the oldest to make room
         ring.write(pcm, offset, count)
 
-        val level = ring.available // before the threshold drop, as audio_regulator.c
-        val max = if (playing) targetFrames * 11 / 10 + 60 * sampleRate / 1000 else targetFrames + 10 * sampleRate / 1000
+        var inserted = 0
+        val max = if (played) {
+            inserted = underflow
+            underflow = 0
+            targetFrames * 11 / 10 + 60 * sampleRate / 1000
+        } else {
+            // Not started: do not accumulate more than needed, it would only delay the start.
+            targetFrames + 10 * sampleRate / 1000
+        }
+        val level = ring.available // sampled before the threshold drop, as audio_regulator.c
         if (level > max) dropped += ring.read(null, 0, level - max)
         droppedFrames += dropped
+        received = true
+        if (!played) return result
 
-        if (!playing) return null
-        var result: Int? = null
-        if (restarted) {
-            // (Re)started at the target level: restart the regulation from there.
-            restarted = false
-            avg = targetFrames.toDouble()
-            avgCount = 1
-            framesSinceResync = 0
-            if (compensationActive) result = 0
-        }
-        // Compensation and drops change the level instantly; only the natural level is smoothed.
-        avg = (avg + (count - inputFrames) - dropped).coerceAtLeast(0.0)
+        // Compensation, inserted silence and drops change the level instantly; only the natural level is smoothed.
+        avg = (avg + (count - inputFrames) + inserted - dropped).coerceAtLeast(0.0)
         if (avgCount < AVERAGE_RANGE) avgCount++
         avg = ((avgCount - 1) * avg + level) / avgCount
 
         framesSinceResync += count
         if (framesSinceResync >= sampleRate) {
+            // Recompute the compensation every second.
             framesSinceResync = 0
             var diff = (targetFrames - avg).toInt()
             // Enable beyond +/-4 ms, disable below +/-1 ms.
             val threshold = if (compensationActive) sampleRate / 1000 else sampleRate * 4 / 1000
             if (abs(diff) < threshold) diff = 0
             else if (diff < 0 && level < targetFrames) diff = 0 // never accelerate below the target
-            val maxDiff = compensationDistance(sampleRate) / 50 // 2%
-            result = diff.coerceIn(-maxDiff, maxDiff)
+            val distance = compensationDistance(sampleRate)
+            val maxDiff = distance / 50 // 2%
+            result = Compensation(diff.coerceIn(-maxDiff, maxDiff), distance)
         }
         result
     }
 
-    /** Records that the compensation returned by [push] was applied. */
-    fun compensationApplied(diff: Int): Unit = synchronized(lock) { compensationActive = diff != 0 }
+    /** Records that a compensation returned by [push] was applied. */
+    fun compensationApplied(c: Compensation): Unit = synchronized(lock) { compensationActive = c.sampleDelta != 0 }
 
-    /** Fills [frames] frames of [out]: buffered audio, or silence while buffering or on underrun. Returns real frames. */
+    /** Fills [frames] frames of [out]: buffered audio, or silence before the start and on underrun. Returns real frames. */
     fun pull(out: ByteArray, frames: Int): Int = synchronized(lock) {
-        if (!playing) {
-            if (ring.available < targetFrames || ring.available == 0) {
-                out.fill(0, 0, frames * frameBytes)
-                return 0
-            }
-            playing = true
-            restarted = true
+        if (!played && ring.available < targetFrames) {
+            // Delay the start until the target buffering is reached.
+            out.fill(0, 0, frames * frameBytes)
+            return 0
         }
         val read = ring.read(out, 0, frames)
         playedFrames += read
         if (read < frames) {
+            val silence = frames - read
             out.fill(0, read * frameBytes, frames * frameBytes)
-            underruns++
-            underrunFrames += frames - read
-            playing = false
+            if (received) {
+                // The late frames are kept: the silence counts as extra buffering for the regulation.
+                underflow += silence
+                underruns++
+                underrunFrames += silence
+            }
         }
+        played = true
         read
     }
 
     companion object {
         /** Frames of the sliding average of the buffering level (v5.0: 128). */
         private const val AVERAGE_RANGE = 128
+        /** A pts gap beyond this is a discontinuity. */
+        private const val DISCONTINUITY_US = 100_000L
 
         /** Compensation is spread over 4 seconds (but recomputed every second). */
         fun compensationDistance(sampleRate: Int): Int = 4 * sampleRate

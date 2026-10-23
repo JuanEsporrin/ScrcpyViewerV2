@@ -36,8 +36,8 @@ class AudioPlayerDeviceTest {
     private val launcher = ServerLauncher(AdbClient(adbPath = { adbPath }), BundledTools(dataDir = Files.createTempDirectory("audio-device-test")))
     private val serial = System.getProperty("scrcpyviewer.deviceSerials")?.split(',')?.first() ?: "MBX6P240401889"
 
-    /** `-Dscrcpyviewer.audioSeconds` is not forwarded by Gradle; edit for a long (e.g. 120 s) drift run. */
-    private val durationSeconds = 10
+    /** Measured duration: `-PaudioSeconds=120` for a long drift run (default 10). */
+    private val durationSeconds = System.getProperty("scrcpyviewer.audioSeconds")?.toIntOrNull() ?: 10
 
     @AfterTest
     fun tearDown() {

@@ -101,29 +101,45 @@ class AudioPlayerTest {
 
     @Test
     fun `jitter buffer plays silence on underrun`() {
-        val jb = JitterBuffer(frameBytes = 4, sampleRate = 1000, targetFrames = 10)
-        // Before the target is reached nothing is played.
-        assertContentEquals(IntArray(8), jb.pullInts(8))
-        jb.push(frames(1, 5), 5)
-        assertContentEquals(IntArray(8), jb.pullInts(8))
+        // 1000 Hz so 1 ms = 1 frame; a 50 ms target, so the drop threshold while playing is 55 + 60 = 115 frames.
+        val jb = JitterBuffer(frameBytes = 4, sampleRate = 1000, targetFrames = 50)
+        // Before the target is reached nothing is played, and it is not an underrun.
+        assertContentEquals(IntArray(10), jb.pullInts(10))
+        jb.push(frames(1, 30), 30, ptsUs = 0)
+        assertContentEquals(IntArray(10), jb.pullInts(10))
         assertEquals(0, jb.stats().underruns, "initial buffering is not an underrun")
-        assertEquals(5, jb.available)
 
-        jb.push(frames(6, 10), 10) // 15 buffered >= target: playback starts
-        assertContentEquals(IntArray(8) { 1 + it }, jb.pullInts(8))
+        jb.push(frames(31, 20), 20, ptsUs = 30_000) // 50 buffered: playback starts
+        assertContentEquals(IntArray(50) { 1 + it }, jb.pullInts(50))
         assertTrue(jb.isPlaying)
-        // 7 left: the pull runs short and the rest is silence.
-        assertContentEquals(IntArray(8) { if (it < 7) 9 + it else 0 }, jb.pullInts(8))
-        assertEquals(1, jb.stats().underruns)
-        assertEquals(1, jb.stats().underrunFrames)
-        assertTrue(!jb.isPlaying, "re-buffering after an underrun")
 
-        // Re-buffers: 5 frames are not enough to resume.
-        jb.push(frames(100, 5), 5)
-        assertContentEquals(IntArray(4), jb.pullInts(4))
-        jb.push(frames(105, 5), 5)
-        assertContentEquals(IntArray(4) { 100 + it }, jb.pullInts(4))
-        assertEquals(1, jb.stats().underruns)
+        // The device stalls for 100 ms: silence is played and playback goes on.
+        repeat(10) { assertContentEquals(IntArray(10), jb.pullInts(10)) }
+        assertEquals(10, jb.stats().underruns)
+        assertEquals(100, jb.stats().underrunFrames)
+        assertTrue(jb.isPlaying, "playback continues after an underrun")
+
+        // The late 100 ms arrive in a burst (continuous pts): all kept, then played.
+        jb.push(frames(51, 100), 100, ptsUs = 50_000)
+        assertEquals(0, jb.stats().droppedFrames)
+        assertContentEquals(IntArray(100) { 51 + it }, jb.pullInts(100))
+    }
+
+    @Test
+    fun `jitter buffer pads a discontinuity to the target`() {
+        val jb = JitterBuffer(frameBytes = 4, sampleRate = 1000, targetFrames = 50)
+        assertEquals(null, jb.push(frames(1, 50), 50, ptsUs = 0)) // next expected pts: 50 ms
+        assertContentEquals(IntArray(50) { 1 + it }, jb.pullInts(50))
+
+        // 200 ms later than expected (> 100 ms): silence up to the target, compensation reset.
+        val c = jb.push(frames(100, 10), 10, ptsUs = 250_000)
+        assertEquals(JitterBuffer.Compensation(0, 0), c)
+        assertEquals(50, jb.available)
+        assertContentEquals(IntArray(50) { if (it < 40) 0 else 100 + it - 40 }, jb.pullInts(50))
+
+        // 100 ms late exactly is not a discontinuity.
+        assertEquals(null, jb.push(frames(200, 10), 10, ptsUs = 360_000))
+        assertEquals(10, jb.available)
     }
 
     @Test
@@ -131,7 +147,7 @@ class AudioPlayerTest {
         val jb = JitterBuffer(frameBytes = 4, sampleRate = 1000, targetFrames = 100)
         jb.push(frames(0, 100), 100)
         jb.pullInts(1) // start
-        var compensation: Int? = null
+        var compensation: JitterBuffer.Compensation? = null
         // Keep ~150 frames buffered when pushing (above the target of 100, below the drop threshold of 170) for
         // more than a second of input.
         repeat(30) {
@@ -140,7 +156,7 @@ class AudioPlayerTest {
         }
         assertEquals(0, jb.stats().droppedFrames)
         assertEquals(0, jb.stats().underruns)
-        val c = assertNotNull(compensation, "a compensation was computed after 1 s of input")
+        val c = assertNotNull(compensation, "a compensation was computed after 1 s of input").sampleDelta
         assertTrue(c < 0, "drops samples to shrink the buffering, got $c")
         assertTrue(c >= -JitterBuffer.compensationDistance(1000) / 50, "limited to 2%")
     }
