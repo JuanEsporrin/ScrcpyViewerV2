@@ -99,17 +99,27 @@ fun DevicesContent(
     /** Starts the preset menu open (for screenshots). */
     presetMenuOpen: Boolean = false,
 ) {
-    Row(modifier.fillMaxSize()) {
-        DeviceColumn(state, onSelect, onOpen)
-        VerticalRule()
-        Column(Modifier.weight(1f).fillMaxHeight()) {
-            if (state.selectedSerial == null) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("Select a device to choose its options", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(modifier.fillMaxSize()) {
+        state.persistenceError?.let {
+            Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Device options can't be saved: $it", color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                )
+            }
+        }
+        Row(Modifier.weight(1f).fillMaxWidth()) {
+            DeviceColumn(state, onSelect, onOpen)
+            VerticalRule()
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                if (state.selectedSerial == null) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("Select a device to choose its options", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    OptionsPane(state, onQuery, onGroup, onToggle, onValue, Modifier.weight(1f))
+                    Footer(state, onSave, onSaveAsNew, onMirror, onPreset, presetMenuOpen)
                 }
-            } else {
-                OptionsPane(state, onQuery, onGroup, onToggle, onValue, Modifier.weight(1f))
-                Footer(state, onSave, onSaveAsNew, onMirror, onPreset, presetMenuOpen)
             }
         }
     }

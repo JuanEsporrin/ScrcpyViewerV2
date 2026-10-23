@@ -254,4 +254,14 @@ class DevicesViewModelTest {
         devices.value = listOf(ready)
         assertEquals(OptionValues(emptyMap()), vm.state.value.values)
     }
+
+    @Test
+    fun `a devices json that cannot be saved shows in the state`() {
+        // A file where the data directory should be: every save fails.
+        val blocker = Files.writeString(dir.resolve("blocker"), "x")
+        val broken = DeviceOptionsStore(blocker.resolve("devices.json"), presets, scope)
+        val vm = DevicesViewModel(devices, connected, broken, presets, scope, mirrorRequests)
+        vm.toggle("no-audio", true)
+        assertTrue(vm.state.value.persistenceError?.contains("devices.json") == true, "${vm.state.value.persistenceError}")
+    }
 }

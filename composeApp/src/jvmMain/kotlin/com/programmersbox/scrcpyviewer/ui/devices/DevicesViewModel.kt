@@ -45,6 +45,8 @@ data class DevicesUiState(
     val presets: List<Preset> = emptyList(),
     /** The selected device's base preset (still existing), or null for "No preset". */
     val basePresetId: String? = null,
+    /** Why the device options (`devices.json`) cannot be saved, or null. */
+    val persistenceError: String? = null,
 )
 
 private data class Selection(val devices: List<Device>, val connected: Boolean, val serial: String?)
@@ -82,7 +84,8 @@ class DevicesViewModel(
         combine(query, group) { q, g -> Filters(q, g) },
         workingValues,
         presets.presets,
-    ) { sel, filters, values, allPresets ->
+        options.persistenceError,
+    ) { sel, filters, values, allPresets, persistenceError ->
         val serial = sel.serial
         val current = values ?: OptionValues(emptyMap())
         val errors = current.validate()
@@ -102,6 +105,7 @@ class DevicesViewModel(
             isModified = serial != null && options.isModified(serial),
             presets = allPresets,
             basePresetId = serial?.let { options.effectiveBasePresetId(it) },
+            persistenceError = persistenceError,
         )
     }.stateIn(scope, SharingStarted.Eagerly, DevicesUiState(devices = devices.value, adbConnected = connected.value))
 

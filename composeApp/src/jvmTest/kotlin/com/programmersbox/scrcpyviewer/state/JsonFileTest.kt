@@ -65,4 +65,17 @@ class JsonFileTest {
         jf().save(Doc(7))
         assertEquals(Doc(7), jf().load())
     }
+
+    @Test
+    fun `a failed write sets error without throwing, and the next good write clears it`() {
+        val blocker = dir.resolve("blocker")
+        Files.writeString(blocker, "a file where the directory should be")
+        val f = JsonFile(blocker.resolve("doc.json"), Doc.serializer()) { Doc() }
+        f.save(Doc(1)) // must not throw
+        assertNotNull(f.error.value)
+        Files.delete(blocker)
+        f.save(Doc(2))
+        assertNull(f.error.value)
+        assertEquals(Doc(2), f.load())
+    }
 }

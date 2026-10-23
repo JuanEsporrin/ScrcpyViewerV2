@@ -70,6 +70,12 @@ class DevicesScreenshotTest {
     )
 
     @Test
+    fun `devices persistence error`() = render(
+        "devices-light-persistence-error.png", ThemeMode.Light,
+        state.copy(persistenceError = "Could not save devices.json: Permission denied"),
+    )
+
+    @Test
     fun `devices light preset menu`() {
         val out = outDir.resolve("devices-light-preset-menu.png")
         renderToPng(1280, 800, out) {
