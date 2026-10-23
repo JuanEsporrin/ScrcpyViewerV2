@@ -97,50 +97,67 @@ class ZoomTest {
         }
     }
 
-    // ---- geometry ----
+    // ---- geometry: the canvas is the zoomed image, pointer points are canvas-local ----
 
     private val frame = IntSize(1000, 2000)
 
-    private fun mapperFor(rect: Rect) = InputMapper(frameSize = { frame }, viewRect = { rect })
+    private fun mapperAt(zoom: Float) =
+        InputMapper(frameSize = { frame }, viewRect = { Rect(0f, 0f, frame.width * zoom, frame.height * zoom) })
+
+    private fun InputMapper.at(x: Float, y: Float) =
+        (press(Offset(x, y), PointerButton.Primary).single() as ControlMessage.InjectTouch).position
 
     @Test
-    fun `zoomed rect is centred when smaller than the stage`() {
-        val r = Zoom.rect(stage = IntSize(800, 1200), oriented = frame, zoom = 0.5f, scroll = Offset.Zero)
-        assertEquals(Rect(150f, 100f, 650f, 1100f), r)
+    fun `200 percent maps canvas-local points, also far into a scrolled canvas`() {
+        val m = mapperAt(2f) // canvas 2000 x 4000
+        assertEquals(Position(0, 0, 1000, 2000), m.at(0f, 0f))
+        assertEquals(Position(350, 750, 1000, 2000), m.at(700f, 1500f))
+        // After scrolling the stage the same screen spot is a larger canvas-local point.
+        assertEquals(Position(999, 1999, 1000, 2000), m.at(1999f, 3999f))
     }
 
     @Test
-    fun `zoomed rect follows the scroll offset when larger than the stage`() {
-        val r = Zoom.rect(stage = IntSize(800, 1200), oriented = frame, zoom = 2f, scroll = Offset(300f, 1000f))
-        assertEquals(Rect(-300f, -1000f, 1700f, 3000f), r)
+    fun `50 percent maps the whole canvas, which the stage centres`() {
+        val m = mapperAt(0.5f) // canvas 500 x 1000
+        assertEquals(Position(500, 1000, 1000, 2000), m.at(250f, 500f))
+        assertEquals(Rect(0f, 0f, 500f, 1000f), m.displayedRect())
     }
 
     @Test
-    fun `maps a point at 200 percent with a scroll offset`() {
-        val rect = Zoom.rect(IntSize(800, 1200), frame, 2f, Offset(300f, 1000f))
-        // Stage point (400, 500) is image point (700, 1500) in zoomed px = frame (350, 750).
-        val touch = mapperFor(rect).press(Offset(400f, 500f), PointerButton.Primary).single() as ControlMessage.InjectTouch
-        assertEquals(Position(350, 750, 1000, 2000), touch.position)
+    fun `click indicator uses the canvas rect`() {
+        val dots = ClickIndicator(mapperAt(2f)::displayedRect)
+        dots.press(Offset(1500f, 3000f))
+        assertEquals(Offset(1500f, 3000f), dots.state(0)?.position)
+        dots.press(Offset(2500f, 100f)) // outside the canvas
+        assertEquals(Offset(1500f, 3000f), dots.state(0)?.position)
+    }
+
+    // ---- ZoomKeyFilter ----
+
+    private val cmd = AwtKeyEvent.META_DOWN_MASK
+    private val P = AwtKeyEvent.KEY_PRESSED
+    private val R = AwtKeyEvent.KEY_RELEASED
+    private val T = AwtKeyEvent.KEY_TYPED
+
+    @Test
+    fun `filter consumes press, typed and release of a zoom chord`() {
+        val f = ZoomKeyFilter(mac = true)
+        val got = mutableListOf<ZoomCommand>()
+        assertEquals(true, f.handle(P, AwtKeyEvent.VK_EQUALS, cmd) { got += it })
+        assertEquals(true, f.handle(T, AwtKeyEvent.VK_UNDEFINED, cmd) {})
+        assertEquals(true, f.handle(R, AwtKeyEvent.VK_EQUALS, 0) {}) // Cmd already released
+        assertEquals(listOf(ZoomCommand.In), got)
+        // Back to normal: nothing is swallowed afterwards.
+        assertEquals(false, f.handle(P, AwtKeyEvent.VK_EQUALS, 0) {})
+        assertEquals(false, f.handle(T, AwtKeyEvent.VK_UNDEFINED, cmd) {})
     }
 
     @Test
-    fun `maps a point at 50 percent centred, and drops the letterbox`() {
-        val rect = Zoom.rect(IntSize(800, 1200), frame, 0.5f, Offset.Zero)
-        val mapper = mapperFor(rect)
-        // Rect is (150,100)-(650,1100): its centre is the frame centre.
-        val touch = mapper.press(Offset(400f, 600f), PointerButton.Primary).single() as ControlMessage.InjectTouch
-        assertEquals(Position(500, 1000, 1000, 2000), touch.position)
-        assertEquals(emptyList(), mapper.press(Offset(100f, 600f), PointerButton.Primary))
-        assertEquals(Rect(150f, 100f, 650f, 1100f), mapper.displayedRect())
-    }
-
-    @Test
-    fun `click indicator uses the zoomed rect`() {
-        val rect = Zoom.rect(IntSize(800, 1200), frame, 0.5f, Offset.Zero)
-        val dots = ClickIndicator(mapperFor(rect)::displayedRect)
-        dots.press(Offset(100f, 600f)) // letterbox
-        assertNull(dots.state(0))
-        dots.press(Offset(400f, 600f))
-        assertEquals(Offset(400f, 600f), dots.state(0)?.position)
+    fun `filter forgets held keys on reset so the next plain press passes`() {
+        val f = ZoomKeyFilter(mac = true)
+        f.handle(P, AwtKeyEvent.VK_0, cmd) {}
+        f.reset() // window lost focus before the release
+        assertEquals(false, f.handle(P, AwtKeyEvent.VK_0, 0) {})
+        assertEquals(false, f.handle(T, AwtKeyEvent.VK_UNDEFINED, cmd) {})
     }
 }

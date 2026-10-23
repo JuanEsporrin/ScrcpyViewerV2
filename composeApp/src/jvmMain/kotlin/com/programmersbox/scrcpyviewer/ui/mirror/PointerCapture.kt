@@ -2,6 +2,7 @@ package com.programmersbox.scrcpyviewer.ui.mirror
 
 import androidx.compose.ui.awt.awtEventOrNull
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
@@ -68,7 +69,7 @@ class WindowPointerCapture(
     }
 
     /** A pointer event on the video view of [viewSize] px; [density] converts px to screen points. */
-    fun pointer(ev: PointerEvent, window: Window, viewSize: IntSize, density: Float) {
+    fun pointer(ev: PointerEvent, window: Window, viewSize: IntSize, density: Float, stage: Rect? = null) {
         val kind = when (ev.type) {
             PointerEventType.Move -> PointerKind.Move
             PointerEventType.Press -> PointerKind.Press
@@ -80,7 +81,7 @@ class WindowPointerCapture(
         val local = ev.changes.firstOrNull()?.position
         if (kind == null) {
             if (ev.type == PointerEventType.Exit && capture.active.value && awt != null && local != null) {
-                recentre(window, awt, local, viewSize, density, force = true)
+                recentre(window, awt, local, viewSize, density, force = true, stage)
             }
             return
         }
@@ -95,7 +96,7 @@ class WindowPointerCapture(
         if (awt == null || local == null) return
         val d = tracker.move(awt.xOnScreen, awt.yOnScreen)
         send(mapper.relativeMove(d.x, d.y))
-        recentre(window, awt, local, viewSize, density, force = false)
+        recentre(window, awt, local, viewSize, density, force = false, stage)
     }
 
     private fun activate() {
@@ -108,11 +109,16 @@ class WindowPointerCapture(
      * always with [force], when it left the view), so it never hits the screen edge. [local] is the event position
      * in the view (px), [awt] the same event in screen coordinates (points). The target is kept inside the window.
      */
-    private fun recentre(window: Window, awt: MouseEvent, local: Offset, viewSize: IntSize, density: Float, force: Boolean) {
+    private fun recentre(window: Window, awt: MouseEvent, local: Offset, viewSize: IntSize, density: Float, force: Boolean, stage: Rect?) {
         val r = robot ?: return
-        if (!isFocused() || viewSize.width <= 0 || viewSize.height <= 0) return
-        val originX = awt.xOnScreen - local.x / density
-        val originY = awt.yOnScreen - local.y / density
+        if (!isFocused()) return
+        // With a [stage] (the visible area, window px) recentre on it: the zoomed canvas can be larger than the
+        // window and scrolled, so its own origin and size are not on screen.
+        val content = if (stage != null) runCatching { (window as? javax.swing.RootPaneContainer)?.contentPane?.locationOnScreen }.getOrNull() else null
+        val originX = if (stage != null && content != null) content.x + stage.left / density else awt.xOnScreen - local.x / density
+        val originY = if (stage != null && content != null) content.y + stage.top / density else awt.yOnScreen - local.y / density
+        val viewSize = if (stage != null && content != null) IntSize(stage.width.roundToInt(), stage.height.roundToInt()) else viewSize
+        if (viewSize.width <= 0 || viewSize.height <= 0) return
         val w = window.bounds
         val cx = (originX + viewSize.width / 2f / density).roundToInt().coerceIn(w.x + 40, maxOf(w.x + 40, w.x + w.width - 40))
         val cy = (originY + viewSize.height / 2f / density).roundToInt().coerceIn(w.y + 40, maxOf(w.y + 40, w.y + w.height - 40))

@@ -22,21 +22,27 @@ import java.awt.datatransfer.StringSelection
 /** Where [CopyButton] shows its "Copied" message. `null` outside the app shell (previews, tests). */
 val LocalSnackbarHostState = compositionLocalOf<SnackbarHostState?> { null }
 
-/** Copies [text] to the system clipboard and shows a "Copied" snackbar. */
+/** An action that copies its text to the system clipboard and shows the "Copied" snackbar. */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun CopyButton(text: () -> String, label: String = "Copy", modifier: Modifier = Modifier) {
+fun rememberCopyAction(): (String) -> Unit {
     val clipboard = LocalClipboard.current
     val snackbar = LocalSnackbarHostState.current
     val scope = rememberCoroutineScope()
+    return { value ->
+        scope.launch {
+            clipboard.setClipEntry(ClipEntry(StringSelection(value)))
+            snackbar?.showSnackbar("Copied")
+        }
+    }
+}
+
+/** Copies [text] to the system clipboard and shows a "Copied" snackbar. */
+@Composable
+fun CopyButton(text: () -> String, label: String = "Copy", modifier: Modifier = Modifier) {
+    val copy = rememberCopyAction()
     TextButton(
-        onClick = {
-            val value = text()
-            scope.launch {
-                clipboard.setClipEntry(ClipEntry(StringSelection(value)))
-                snackbar?.showSnackbar("Copied")
-            }
-        },
+        onClick = { copy(text()) },
         modifier = modifier,
     ) {
         Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))

@@ -1,8 +1,5 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.unit.IntSize
 import java.awt.event.KeyEvent as AwtKeyEvent
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -42,18 +39,6 @@ object Zoom {
     fun label(scale: Float): String = "${(scale * 100).roundToInt()}%"
 
     /**
-     * Where the image of [oriented] size is drawn in a [stage] at [zoom], in stage coordinates: centred on an axis
-     * where it is smaller than the stage, else shifted by the [scroll] offset.
-     */
-    fun rect(stage: IntSize, oriented: IntSize, zoom: Float, scroll: Offset): Rect {
-        val w = oriented.width * zoom
-        val h = oriented.height * zoom
-        val left = if (w <= stage.width) (stage.width - w) / 2f else -scroll.x
-        val top = if (h <= stage.height) (stage.height - h) / 2f else -scroll.y
-        return Rect(left, top, left + w, top + h)
-    }
-
-    /**
      * Cmd (macOS) or Ctrl + `=`/`+` zoom in, `-` zoom out, `0` fit. Null for any other key. [modifiersEx] is the AWT
      * extended modifier mask.
      */
@@ -67,4 +52,33 @@ object Zoom {
             else -> null
         }
     }
+}
+
+/**
+ * The window's zoom-shortcut key handling. [handle] returns true for events the window consumes: the shortcut press
+ * (it also calls the zoom), repeats, the key-up of a handled key and the typed character of a Cmd/Ctrl chord while a
+ * handled key is down. [reset] forgets held keys (the window lost focus, so their releases never arrive).
+ */
+class ZoomKeyFilter(private val mac: Boolean) {
+    private val down = mutableSetOf<Int>()
+
+    fun handle(id: Int, keyCode: Int, modifiersEx: Int, apply: (ZoomCommand) -> Unit): Boolean {
+        if (id == AwtKeyEvent.KEY_PRESSED) {
+            Zoom.shortcut(keyCode, modifiersEx, mac)?.let {
+                down += keyCode
+                apply(it)
+                return true
+            }
+        }
+        if (down.isEmpty()) return false
+        val chord = AwtKeyEvent.META_DOWN_MASK or AwtKeyEvent.CTRL_DOWN_MASK
+        return when (id) {
+            AwtKeyEvent.KEY_RELEASED -> down.remove(keyCode)
+            AwtKeyEvent.KEY_TYPED -> modifiersEx and chord != 0
+            AwtKeyEvent.KEY_PRESSED -> keyCode in down
+            else -> false
+        }
+    }
+
+    fun reset() = down.clear()
 }

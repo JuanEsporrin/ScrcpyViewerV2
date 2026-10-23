@@ -2,6 +2,7 @@ package com.programmersbox.scrcpyviewer.ui.mirror
 
 import com.programmersbox.scrcpyviewer.Os
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,6 +20,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.HorizontalScrollbar
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.LocalScrollbarStyle
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -71,6 +76,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,6 +96,8 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -114,6 +123,8 @@ import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
 import com.programmersbox.scrcpyviewer.ui.common.CopyButton
+import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
+import com.programmersbox.scrcpyviewer.ui.common.rememberCopyAction
 import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
@@ -371,6 +382,8 @@ fun MirrorWindow(
     )
 
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    // The visible stage in window pixels: the zoomed canvas can be larger than it.
+    var stageBounds by remember { mutableStateOf<Rect?>(null) }
     val currentFit by rememberUpdatedState(fit)
     val control = "no-control" !in e
     val hidKeyboard = remember(session) { if (control && e["keyboard"] == "uhid") HidKeyboard() else null }
@@ -482,24 +495,12 @@ fun MirrorWindow(
         DisposableEffect(session) {
             val paste = if (Os.isMac) AwtKeyEvent.META_DOWN_MASK else AwtKeyEvent.CTRL_DOWN_MASK
             var pasteDown = false
-            // Keys of a handled zoom shortcut: their key-up and typed events are swallowed too.
-            val zoomKeys = mutableSetOf<Int>()
+            val zoomKeys = ZoomKeyFilter(Os.isMac)
             val dispatcher = KeyEventDispatcher { ev ->
                 val inWindow = ev.component === awtWindow || SwingUtilities.getWindowAncestor(ev.component) === awtWindow
                 if (!inWindow) return@KeyEventDispatcher false
                 // Zoom shortcuts belong to the window: never forwarded to the device (any keyboard mode).
-                if (ev.id == AwtKeyEvent.KEY_PRESSED) {
-                    Zoom.shortcut(ev.keyCode, ev.modifiersEx, Os.isMac)?.let {
-                        zoomKeys += ev.keyCode
-                        currentApplyZoom(it)
-                        return@KeyEventDispatcher true
-                    }
-                }
-                if (zoomKeys.isNotEmpty()) {
-                    if (ev.id == AwtKeyEvent.KEY_RELEASED && zoomKeys.remove(ev.keyCode)) return@KeyEventDispatcher true
-                    if (ev.id == AwtKeyEvent.KEY_TYPED && ev.modifiersEx and (AwtKeyEvent.META_DOWN_MASK or AwtKeyEvent.CTRL_DOWN_MASK) != 0) return@KeyEventDispatcher true
-                    if (ev.id == AwtKeyEvent.KEY_PRESSED && ev.keyCode in zoomKeys) return@KeyEventDispatcher true
-                }
+                if (zoomKeys.handle(ev.id, ev.keyCode, ev.modifiersEx) { currentApplyZoom(it) }) return@KeyEventDispatcher true
                 if ("no-control" in e) return@KeyEventDispatcher false
                 if (capture != null && capture.key(ev.id, ev.keyCode, ev.keyLocation)) return@KeyEventDispatcher true
                 if (e["keyboard"] == "disabled") return@KeyEventDispatcher false
@@ -534,6 +535,7 @@ fun MirrorWindow(
 
                 override fun windowLostFocus(ev: WindowEvent) {
                     windowFocused = false
+                    zoomKeys.reset()
                     capture?.focusLost()
                     // Releases that happen in another window never arrive: release what the device holds.
                     hidKeyboard?.let { send(it.releaseAll()) }
@@ -587,6 +589,7 @@ fun MirrorWindow(
         ScrcpyViewerTheme(themeMode) {
             Box(Modifier.fillMaxSize()) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
                     MirrorContent(
                         state = state,
                         frame = frame,
@@ -603,7 +606,7 @@ fun MirrorWindow(
                         onPointer = {
                             when {
                                 "no-control" in e -> Unit
-                                capture != null -> capture.pointer(it, awtWindow, viewSize, density.density)
+                                capture != null -> capture.pointer(it, awtWindow, viewSize, density.density, stageBounds)
                                 else -> {
                                     clickIndicator?.onPointer(it, monotonicMillis())
                                     send(mapper.pointer(it))
@@ -612,8 +615,10 @@ fun MirrorWindow(
                         },
                         onViewSize = { viewSize = it },
                         onStageSize = { stage = it },
+                        onStageBounds = { stageBounds = it },
                         clickIndicator = clickIndicator,
                     )
+                    }
                 }
                 SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 80.dp, bottom = 44.dp))
             }
@@ -655,6 +660,8 @@ fun MirrorContent(
     latestFrame: () -> VideoFrame? = { frame.value },
     /** `show-touches`: the click dots drawn over the frame. */
     clickIndicator: ClickIndicator? = null,
+    /** The stage's bounds in window pixels. */
+    onStageBounds: (Rect) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxSize()) {
@@ -664,7 +671,8 @@ fun MirrorContent(
             Box(
                 Modifier.weight(1f).fillMaxHeight()
                     .background(state.background ?: colors.surfaceDim)
-                    .onSizeChanged(onStageSize),
+                    .onSizeChanged(onStageSize)
+                    .onGloballyPositioned { onStageBounds(it.boundsInWindow()) },
             ) {
                 Stage(state, frame, latestFrame, onPointer, onViewSize, clickIndicator)
                 if (state.status == SessionStatus.Disconnected || state.status == SessionStatus.Failed) {
@@ -765,13 +773,11 @@ private fun ZoomControls(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 /** The "⋮" menu holding what the top strip has no room for. */
 @Composable
 private fun OverflowMenu(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit, showZoom: Boolean, showFit: Boolean, showCopy: Boolean) {
     var open by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
+    val copy = rememberCopyAction()
     Box {
         IconButton(onClick = { open = true }, Modifier.size(32.dp)) {
             Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -793,13 +799,14 @@ private fun OverflowMenu(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit, sh
                 item("Actual size (100%)", ZoomCommand.Actual)
             }
             if (!showCopy) {
-                item("Copy command") {
-                    scope.launch { clipboard.setClipEntry(ClipEntry(StringSelection(state.command))) }
-                }
+                item("Copy command") { copy(state.command) }
             }
         }
     }
 }
+
+/** Pixels a Shift + wheel notch pans the zoomed stage. */
+private const val PAN_PX_PER_NOTCH = 60f
 
 @Composable
 private fun Stage(
@@ -829,10 +836,20 @@ private fun Stage(
         // A thin light ring keeps the dot visible on content close to the primary color.
         drawCircle(dotRing.copy(alpha = 0.6f * dot.alpha), radius = radius, center = dot.position, style = Stroke(1.5.dp.toPx()))
     }
+    // Set by the zoomed stage: pans it by a wheel delta and tells whether it could.
+    val pan = remember { arrayOfNulls<(Offset) -> Boolean>(1) }
     val input = Modifier.pointerInput(Unit) {
         awaitPointerEventScope {
             while (true) {
                 val event = awaitPointerEvent()
+                // Shift + wheel pans a zoomed stage that is larger than the window; any other wheel goes to the device.
+                val scrolled = event.changes.firstOrNull()?.scrollDelta
+                if (event.type == PointerEventType.Scroll && event.keyboardModifiers.isShiftPressed && scrolled != null &&
+                    pan[0]?.invoke(scrolled) == true
+                ) {
+                    event.changes.forEach { it.consume() }
+                    continue
+                }
                 pointer(event)
                 event.changes.forEach { it.consume() }
             }
@@ -842,6 +859,7 @@ private fun Stage(
     val fs = state.frameSize?.let(orientation::orientedSize)
     val zoom = state.zoom
     if (zoom == null || fs == null) {
+        SideEffect { pan[0] = null }
         Canvas(Modifier.fillMaxSize().onSizeChanged(onViewSize).then(input)) {
             frame.value // subscribe: a new frame redraws
             drawLatestFrame(latestFrame, FilterQuality.Low, orientation) { f ->
@@ -856,6 +874,23 @@ private fun Stage(
         val density = LocalDensity.current
         val v = rememberScrollState()
         val h = rememberScrollState()
+        val panScope = rememberCoroutineScope()
+        SideEffect {
+            pan[0] = { d ->
+                val can = v.maxValue > 0 || h.maxValue > 0
+                if (can) panScope.launch {
+                    h.scrollBy(d.x * PAN_PX_PER_NOTCH)
+                    v.scrollBy(d.y * PAN_PX_PER_NOTCH)
+                }
+                can
+            }
+        }
+        val onSurface = MaterialTheme.colorScheme.onSurface
+        val barStyle = LocalScrollbarStyle.current.copy(
+            thickness = 10.dp,
+            unhoverColor = onSurface.copy(alpha = 0.38f),
+            hoverColor = onSurface.copy(alpha = 0.7f),
+        )
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val stageW = maxWidth
             val stageH = maxHeight
@@ -874,8 +909,8 @@ private fun Stage(
                     }
                 }
             }
-            VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight())
-            HorizontalScrollbar(rememberScrollbarAdapter(h), Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+            VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight(), style = barStyle)
+            HorizontalScrollbar(rememberScrollbarAdapter(h), Modifier.align(Alignment.BottomCenter).fillMaxWidth(), style = barStyle)
         }
     }
 }
@@ -1026,7 +1061,7 @@ private fun StatusLine(state: MirrorUiState) {
             }
             val fs = state.frameSize
             val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (if (showMax) state.maxSize?.let { " shown at $it max" } ?: "" else "")
-            Text(size, style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            Text(size, Modifier.weight(1f, fill = false), style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             if (showCodec) Text("${state.codec} · ${state.bitRate}", style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false)
             if (showFps) Text("%.1f fps".format(state.fps), style = style, color = colors.onSurfaceVariant, maxLines = 1, softWrap = false)
             state.audioNote?.let {
