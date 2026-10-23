@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -100,6 +101,17 @@ private fun ValueField(
         ChoiceField(inner.values, enabled, value, onValueChange, modifier)
         return
     }
+    // Local text state: the upstream value arrives asynchronously, so echoing it back would drop characters and
+    // move the caret. Upstream values we sent ourselves are ignored; anything else (preset applied, option
+    // unchecked) replaces the text.
+    var text by remember { mutableStateOf(value) }
+    val sent = remember { mutableSetOf<String>() }
+    LaunchedEffect(value) {
+        if (value != text && value !in sent) {
+            text = value
+            sent.clear()
+        }
+    }
     val textStyle = MaterialTheme.typography.bodySmall.copy(
         color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
         fontFamily = FontFamily.Monospace,
@@ -107,8 +119,12 @@ private fun ValueField(
     )
     val interaction = remember { MutableInteractionSource() }
     BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
+        value = text,
+        onValueChange = {
+            text = it
+            sent += it
+            onValueChange(it)
+        },
         enabled = enabled,
         singleLine = true,
         textStyle = textStyle,
@@ -117,7 +133,7 @@ private fun ValueField(
         modifier = modifier,
         decorationBox = { innerTextField ->
             OutlinedTextFieldDefaults.DecorationBox(
-                value = value,
+                value = text,
                 innerTextField = innerTextField,
                 enabled = enabled,
                 singleLine = true,

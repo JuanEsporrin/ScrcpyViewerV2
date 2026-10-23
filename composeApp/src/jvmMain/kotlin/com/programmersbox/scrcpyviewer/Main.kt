@@ -42,9 +42,11 @@ class AppGraph {
     val selectedSerial: StateFlow<String?> get() = devicesViewModel.selectedSerial
 }
 
-fun main() = application {
+fun main() {
     val graph = AppGraph()
-    Window(onCloseRequest = ::exitApplication, title = "Scrcpy Viewer") {
-        App(graph)
+    application {
+        Window(onCloseRequest = ::exitApplication, title = "Scrcpy Viewer") {
+            App(graph)
+        }
     }
 }

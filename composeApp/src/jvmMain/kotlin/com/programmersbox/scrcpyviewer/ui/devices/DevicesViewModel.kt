@@ -38,6 +38,8 @@ data class DevicesUiState(
     val adbConnected: Boolean = false,
     /** True when the selected device's options started from a preset that still exists (Save is possible). */
     val hasBasePreset: Boolean = false,
+    /** True when the working options differ from the base preset (or from nothing, with no base preset). */
+    val isModified: Boolean = false,
 )
 
 private data class Selection(val devices: List<Device>, val connected: Boolean, val serial: String?)
@@ -92,6 +94,7 @@ class DevicesViewModel(
             canMirror = canMirror(sel.devices, serial, errors),
             adbConnected = sel.connected,
             hasBasePreset = serial != null && options.effectiveBasePresetId(serial) != null,
+            isModified = serial != null && options.isModified(serial),
         )
     }.stateIn(scope, SharingStarted.Eagerly, DevicesUiState(devices = devices.value, adbConnected = connected.value))
 

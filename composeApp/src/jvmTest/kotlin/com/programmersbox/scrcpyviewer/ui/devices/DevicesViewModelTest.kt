@@ -172,4 +172,41 @@ class DevicesViewModelTest {
         assertEquals("Pixel 6", deviceTitle(device("S", model = "Pixel_6")))
         assertEquals("S", deviceTitle(device("S")))
     }
+
+    @Test
+    fun `openDevice on unauthorized selects but emits nothing`() {
+        val vm = vm()
+        vm.openDevice("U1")
+        assertEquals("U1", vm.state.value.selectedSerial)
+        assertEquals(emptyList(), mirrorRequests.replayCache)
+    }
+
+    @Test
+    fun `openDevice on offline device emits nothing`() {
+        devices.value = devices.value + device("O1", DeviceState.Offline)
+        val vm = vm()
+        vm.openDevice("O1")
+        assertEquals("O1", vm.state.value.selectedSerial)
+        assertEquals(emptyList(), mirrorRequests.replayCache)
+    }
+
+    @Test
+    fun `invalid value blocks openDevice and mirror`() {
+        val vm = vm()
+        vm.toggle("max-size", true)
+        vm.setValue("max-size", "abc")
+        vm.mirror()
+        vm.openDevice("R1")
+        assertEquals(emptyList(), mirrorRequests.replayCache)
+    }
+
+    @Test
+    fun `isModified follows edits`() {
+        presets.upsert(Preset("q", "QA", options = OptionValues(mapOf("no-audio" to null))))
+        presets.setDefault("q")
+        val vm = vm()
+        assertFalse(vm.state.value.isModified)
+        vm.toggle("show-touches", true)
+        assertTrue(vm.state.value.isModified)
+    }
 }

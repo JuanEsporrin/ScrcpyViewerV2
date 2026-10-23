@@ -298,7 +298,7 @@ private fun OptionColumn(
 @Composable
 private fun Footer(state: DevicesUiState, onSave: () -> Unit, onSaveAsNew: (String) -> Unit, onMirror: () -> Unit) {
     var naming by remember { mutableStateOf(false) }
-    val modified = state.presetLabel.endsWith("(modified)")
+    val modified = state.isModified
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Row(
