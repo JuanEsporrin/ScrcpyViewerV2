@@ -36,6 +36,9 @@ import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
 import com.programmersbox.scrcpyviewer.ui.settings.AwtSettingsFileDialogs
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsScreen
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
+import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
+import kotlinx.coroutines.flow.filter
+import androidx.compose.runtime.LaunchedEffect
 
 private enum class Destination(val label: String, val icon: ImageVector) {
     Devices("Devices", Icons.Filled.PhoneAndroid),
@@ -49,6 +52,12 @@ fun App(graph: AppGraph) {
     val snackbar = remember { SnackbarHostState() }
     val fileDialogs = remember { AwtPresetFileDialogs() }
     val settingsDialogs = remember { AwtSettingsFileDialogs() }
+    // Recordings that end with no mirror window open for their device (closed window, app-wide view).
+    LaunchedEffect(Unit) {
+        graph.mirrorController.recordingResults
+            .filter { it.serial !in graph.mirrorController.open.value }
+            .collect { snackbar.showSnackbar(recordResultMessage(it.result)) }
+    }
     ScrcpyViewerTheme(settings.themeMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             var selected by rememberSaveable { mutableStateOf(Destination.Devices) }

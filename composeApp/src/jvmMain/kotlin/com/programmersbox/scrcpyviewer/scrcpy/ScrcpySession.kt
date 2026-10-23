@@ -164,7 +164,10 @@ class ScrcpySession(
     /** A started recording has not finished its file yet (it may be stopping in the background). */
     val hasUnfinishedRecording: Boolean get() = unfinishedRecordings.isNotEmpty()
     private val recordingResultChannel = Channel<RecordResult>(Channel.UNLIMITED)
-    /** How each recording ended (saved, or the error), for one collector. */
+    /**
+     * How each recording ended (saved, or the error), for one collector (the [MirrorController] relays it app-wide).
+     * Completes after teardown, once the recorders have finished.
+     */
     val recordingResults: Flow<RecordResult> = recordingResultChannel.receiveAsFlow()
 
     private val tornDown = AtomicBoolean(false)
@@ -556,6 +559,7 @@ class ScrcpySession(
             }
             conn?.cleanup() // tunnel, server process
         } finally {
+            recordingResultChannel.close() // buffered results are still delivered
             cancelGuard.cancel()
             teardownDone.complete(Unit)
             job.complete()

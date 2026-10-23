@@ -85,7 +85,6 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.programmersbox.scrcpyviewer.adb.Device
-import com.programmersbox.scrcpyviewer.media.RecordResult
 import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.Screenshot
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
@@ -261,15 +260,9 @@ fun MirrorWindow(
     fun notify(message: String) {
         uiScope.launch { snackbar.showSnackbar(message) }
     }
-    LaunchedEffect(session) {
-        session.recordingResults.collect { r ->
-            notify(
-                when (r) {
-                    is RecordResult.Saved -> "Recording saved to ${r.file}"
-                    is RecordResult.Failed -> "Recording failed: ${r.message}"
-                }
-            )
-        }
+    // Results of this device's sessions (a previous one too, after Reconnect); the main window shows the others.
+    LaunchedEffect(serial) {
+        controller.recordingResults.filter { it.serial == serial }.collect { notify(recordResultMessage(it.result)) }
     }
     var recordingElapsed by remember { mutableStateOf<String?>(null) }
     /** A start is in flight (directory creation on the IO dispatcher): the Record button waits for it. */

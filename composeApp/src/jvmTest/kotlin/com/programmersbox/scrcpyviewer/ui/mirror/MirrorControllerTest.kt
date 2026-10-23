@@ -16,10 +16,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import com.programmersbox.scrcpyviewer.media.RecordResult
 import java.io.DataOutputStream
+import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -29,13 +32,14 @@ class MirrorControllerTest {
     private val devices = MutableStateFlow(listOf(device("A"), device("B")))
     private val launchers = HashMap<String, MutableList<LocalPairLauncher>>()
     private val clipboard = ArrayList<String>()
+    @Volatile private var options = OptionValues(emptyMap())
 
     private fun device(serial: String, state: DeviceState = DeviceState.Device) =
         Device(serial, state, state.name.lowercase(), null, null, 1, false)
 
     private val controller = MirrorController(
         scope, devices,
-        optionsFor = { OptionValues(emptyMap()) },
+        optionsFor = { options },
         newSession = { serial, values ->
             val launcher = LocalPairLauncher()
             launchers.getOrPut(serial) { ArrayList() } += launcher
@@ -104,5 +108,22 @@ class MirrorControllerTest {
             while (synchronized(clipboard) { clipboard.isEmpty() }) delay(10)
         }
         assertEquals(listOf("hello"), synchronized(clipboard) { clipboard.toList() })
+    }
+
+    @Test
+    fun `a recording that ends after its window closed is still reported`() = runBlocking<Unit> {
+        val file = Files.createTempFile("controller", ".mp4")
+        options = OptionValues(mapOf("record" to file.toString()))
+        val event = scope.async { withTimeout(10_000) { controller.recordingResults.first() } }
+        delay(50) // let the collector subscribe
+        controller.open("A")
+        val session = controller.open.value.getValue("A")
+        withTimeout(5_000) { session.status.first { it == SessionStatus.Running } }
+        assertTrue(session.hasUnfinishedRecording)
+        controller.close("A") // no video was sent: the recording ends during teardown, after the window is gone
+        val e = event.await()
+        assertEquals("A", e.serial)
+        assertIs<RecordResult.Failed>(e.result)
+        Files.deleteIfExists(file)
     }
 }

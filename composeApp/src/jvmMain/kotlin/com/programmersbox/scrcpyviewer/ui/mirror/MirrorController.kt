@@ -2,6 +2,7 @@ package com.programmersbox.scrcpyviewer.ui.mirror
 
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.adb.DeviceState
+import com.programmersbox.scrcpyviewer.media.RecordResult
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.DeviceMessage
 import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
@@ -26,6 +27,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 
+/** How a recording of [serial]'s session ended. */
+data class RecordingEvent(val serial: String, val result: RecordResult)
+
+/** The snackbar text for [result]. */
+fun recordResultMessage(result: RecordResult): String = when (result) {
+    is RecordResult.Saved -> "Recording saved to ${result.file}"
+    is RecordResult.Failed -> "Recording failed: ${result.message}"
+}
+
 /**
  * The open mirror sessions, one per serial. Sessions run on [scope] (the app graph scope), so they outlive any
  * window composition; closing a window calls [close], and closing the app calls [closeAll].
@@ -35,6 +45,9 @@ import kotlinx.coroutines.launch
  *
  * A [DeviceMessage.Clipboard] from a device is passed to [setClipboard] unless the session has
  * `no-clipboard-autosync`.
+ *
+ * Every session's [ScrcpySession.recordingResults] is relayed to [recordingResults] for as long as the session
+ * lives, so a recording that ends after its window closed (or across a Reconnect) is still reported.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MirrorController(
@@ -54,6 +67,10 @@ class MirrorController(
     private val _focusRequests = MutableSharedFlow<String>(extraBufferCapacity = 16)
     /** A serial whose window should come to the front (mirror requested while it is already open). */
     val focusRequests: SharedFlow<String> = _focusRequests.asSharedFlow()
+
+    private val _recordingResults = MutableSharedFlow<RecordingEvent>(extraBufferCapacity = 64)
+    /** How each recording of every session ended. */
+    val recordingResults: SharedFlow<RecordingEvent> = _recordingResults.asSharedFlow()
 
     private val statuses = open.flatMapLatest { map ->
         if (map.isEmpty()) flowOf(emptyMap())
@@ -115,6 +132,10 @@ class MirrorController(
         val values = optionsFor(serial)
         val session = newSession(serial, values)
         _open.update { it + (serial to session) }
+        // Ends when the session's teardown completes its result channel.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            session.recordingResults.collect { _recordingResults.tryEmit(RecordingEvent(serial, it)) }
+        }
         if ("no-clipboard-autosync" !in values.entries) {
             // UNDISPATCHED: subscribed before this returns, so no early clipboard message is missed.
             clipboardJobs[session] = scope.launch(start = CoroutineStart.UNDISPATCHED) {
