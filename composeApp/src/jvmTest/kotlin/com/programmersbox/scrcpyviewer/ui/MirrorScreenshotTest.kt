@@ -5,9 +5,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.unit.IntSize
+import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorContent
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorUiState
@@ -28,7 +27,7 @@ class MirrorScreenshotTest {
     private val outDir = Paths.get(System.getProperty("user.dir")).resolve("build/screenshots")
 
     /** A lock-screen-like 1344x2992 frame. */
-    private fun syntheticFrame(): ImageBitmap {
+    private fun syntheticFrame(): VideoFrame {
         val w = 1344
         val h = 2992
         val bitmap = Bitmap().apply { allocPixels(org.jetbrains.skia.ImageInfo(w, h, org.jetbrains.skia.ColorType.BGRA_8888, org.jetbrains.skia.ColorAlphaType.OPAQUE)) }
@@ -53,7 +52,7 @@ class MirrorScreenshotTest {
         for (row in 0 until 2) for (col in 0 until 4) {
             canvas.drawCircle(220f + col * 300f, 2300f + row * 300f, 110f, icon)
         }
-        return bitmap.asComposeImageBitmap()
+        return VideoFrame.of(bitmap)
     }
 
     private val state = MirrorUiState(
@@ -70,7 +69,7 @@ class MirrorScreenshotTest {
 
     private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state) {
         val out = outDir.resolve(name)
-        val frame = mutableStateOf<ImageBitmap?>(syntheticFrame())
+        val frame = mutableStateOf<VideoFrame?>(syntheticFrame())
         renderToPng(1280, 800, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {

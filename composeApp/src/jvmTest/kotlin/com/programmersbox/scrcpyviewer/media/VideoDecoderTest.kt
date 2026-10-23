@@ -1,11 +1,13 @@
 package com.programmersbox.scrcpyviewer.media
 
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.unit.IntSize
 import com.programmersbox.scrcpyviewer.scrcpy.MediaPacket
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
 import com.programmersbox.scrcpyviewer.scrcpy.VideoCodecMeta
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -60,7 +62,7 @@ class VideoDecoderTest {
     fun `decodes sample h264`() {
         val s = sample()
         assertEquals(5, s.frames.size)
-        val published = ArrayList<ImageBitmap>()
+        val published = ArrayList<VideoFrame>()
         val decoder = VideoDecoder(StreamProtocol.CODEC_H264, onFrame = { published += it })
         try {
             decoder.feed(s)
@@ -70,11 +72,13 @@ class VideoDecoderTest {
             assertEquals(240, frame.height)
             assertTrue(decoder.decodedFrames >= 1)
             // testsrc is colourful: the converted pixels must not be blank.
-            val pixels = assertNotNull(frame.asSkiaBitmap().readPixels())
+            val pixels = assertNotNull(frame.use { it.readPixels() })
             assertTrue(pixels.count { it != 0.toByte() } > pixels.size / 4, "decoded frame has content")
-            // Every frame is its own immutable bitmap: nothing published is written again.
-            assertEquals(published.size, published.map { System.identityHashCode(it.asSkiaBitmap()) }.distinct().size)
-            assertTrue(frame.asSkiaBitmap().isImmutable)
+            assertTrue(frame.use { it.isImmutable }!!)
+            // Every frame is its own bitmap; all but the current one are released.
+            assertEquals(published.size, published.distinct().size)
+            assertTrue(published.dropLast(1).all { it.isReleased && it.use { true } == null })
+            assertTrue(!frame.isReleased)
         } finally {
             decoder.close()
         }
@@ -96,20 +100,62 @@ class VideoDecoderTest {
     }
 
     @Test
-    fun `replaced frames are released after the delay, the current one is kept`() {
-        val published = ArrayList<ImageBitmap>()
+    fun `the previous frame is released when the next is published, the last one survives close`() {
+        val published = ArrayList<VideoFrame>()
         val decoder = VideoDecoder(StreamProtocol.CODEC_H264, onFrame = { published += it })
         try {
             decoder.feed(sample())
-            Thread.sleep(VideoDecoder.RELEASE_DELAY_MS + 50)
-            decoder.feed(sample()) // the next publish retires the old ones
-            val first = published.first().asSkiaBitmap()
-            assertTrue(first.isClosed, "a frame replaced long ago is released")
-            assertTrue(!decoder.frame.value!!.asSkiaBitmap().isClosed, "the current frame is kept")
+            assertTrue(published.size >= 2)
+            assertTrue(published.dropLast(1).all { it.isReleased })
         } finally {
             decoder.close()
         }
-        assertTrue(!decoder.frame.value!!.asSkiaBitmap().isClosed, "the last frame survives close()")
+        val last = decoder.frame.value!!
+        assertEquals(320, last.use { it.width })
+    }
+
+    @Test
+    fun `use never touches a released frame while frames are published`() {
+        val s = sample()
+        val decoder = VideoDecoder(StreamProtocol.CODEC_H264)
+        val stop = AtomicBoolean(false)
+        val failure = AtomicReference<Throwable?>(null)
+        val reads = AtomicInteger()
+        val nulls = AtomicInteger()
+        try {
+            decoder.feed(s)
+            val reader = thread(name = "frame-reader") {
+                try {
+                    while (!stop.get()) {
+                        val f = decoder.frame.value ?: continue
+                        val w = f.use { it.width }
+                        if (w == null) {
+                            check(f.isReleased) { "use() returned null for a live frame" }
+                            nulls.incrementAndGet()
+                        } else {
+                            check(w == 320) { "width $w" }
+                            reads.incrementAndGet()
+                        }
+                    }
+                } catch (t: Throwable) {
+                    failure.set(t)
+                }
+            }
+            val end = System.nanoTime() + 2_000_000_000L
+            var published = 0
+            while (System.nanoTime() < end) {
+                decoder.feed(s) // decodes and publishes 5 frames, releasing each previous one
+                published += 5
+            }
+            stop.set(true)
+            reader.join(5_000)
+            failure.get()?.let { throw it }
+            println("[hammer] published $published frames, reads $reads, nulls (released) $nulls")
+            assertTrue(reads.get() > 0)
+        } finally {
+            stop.set(true)
+            decoder.close()
+        }
     }
 
     @Test

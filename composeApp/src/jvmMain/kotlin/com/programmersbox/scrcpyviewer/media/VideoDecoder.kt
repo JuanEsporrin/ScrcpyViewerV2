@@ -1,7 +1,5 @@
 package com.programmersbox.scrcpyviewer.media
 
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.unit.IntSize
 import com.programmersbox.scrcpyviewer.scrcpy.MediaPacket
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
@@ -32,21 +30,20 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Decodes the scrcpy video stream with FFmpeg (JavaCPP) and publishes every frame as a new, immutable BGRA
- * [ImageBitmap].
+ * Decodes the scrcpy video stream with FFmpeg (JavaCPP) and publishes every frame as a new [VideoFrame] (an
+ * immutable BGRA Skia bitmap).
  *
  * Config packets are never decoded on their own (v5.0 `decoder.c` ignores them). For H.264/H.265 the config packet
  * is kept and prepended to the next media packet, like `app/src/packet_merger.c`; other codecs carry it in-band.
  *
  * Each frame is converted with `sws_scale` straight into the pixels of a freshly allocated Skia [Bitmap], which is
  * then made immutable and published through [frame] and [onFrame]. Nothing writes to a bitmap after it is
- * published, so the UI can draw it on any thread without locking.
+ * published.
  *
- * Frame lifetime: the GC does not see Skia's native memory (one frame is up to ~16 MB), so a frame is released
- * explicitly [RELEASE_DELAY_MS] after a newer frame replaced it. Drawing makes its own reference-counted
- * `SkImage` from the bitmap at draw time, so only the read-then-draw step must fit in that window. A consumer
- * that keeps a frame longer (screenshot, recording) must copy it. The current (last) frame is never released, and
- * stays valid after [close] so it can be shown under the Disconnected scrim. The conversion
+ * Frame lifetime: the GC does not see Skia's native memory (one frame is up to ~16 MB), so the previous frame is
+ * released as soon as a new one is published. Release takes the frame lock that [VideoFrame.use] holds, so a
+ * consumer either sees the pixels inside `use` or gets null; it never touches a released bitmap. Only the current
+ * frame is alive; it stays valid after [close] so it can be shown under the Disconnected scrim. The conversion
  * context is recreated when the frame size or pixel format changes ([onSession] on rotation, or a frame of another
  * size), and [frameSize] follows.
  *
@@ -56,7 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class VideoDecoder(
     private val codecId: Int,
-    private val onFrame: (ImageBitmap) -> Unit = {},
+    private val onFrame: (VideoFrame) -> Unit = {},
     private val onFps: (Double) -> Unit = {},
     private val clock: () -> Long = System::nanoTime,
 ) : VideoSink {
@@ -64,8 +61,8 @@ class VideoDecoder(
     /** Size of the session (from the headers) or of the last decoded frame, whichever changed last. */
     val frameSize: StateFlow<IntSize?> = _frameSize.asStateFlow()
 
-    private val _frame = MutableStateFlow<ImageBitmap?>(null)
-    val frame: StateFlow<ImageBitmap?> = _frame.asStateFlow()
+    private val _frame = MutableStateFlow<VideoFrame?>(null)
+    val frame: StateFlow<VideoFrame?> = _frame.asStateFlow()
 
     private val _fps = MutableStateFlow(0.0)
     val fps: StateFlow<Double> = _fps.asStateFlow()
@@ -74,6 +71,8 @@ class VideoDecoder(
         private set
 
     private val lock = Any()
+    /** Taken by [VideoFrame.use] and by the release of a replaced frame (never while holding it, take [lock]). */
+    private val frameLock = Any()
     @Volatile private var closed = false
     private val mergeConfig = codecId == StreamProtocol.CODEC_H264 || codecId == StreamProtocol.CODEC_H265
     private var pendingConfig: ByteArray? = null
@@ -91,9 +90,7 @@ class VideoDecoder(
     private var swsHeight = 0
     private var swsFormat = -1
 
-    private class Retired(val bitmap: Bitmap, val at: Long)
-    private var current: Bitmap? = null
-    private val superseded = ArrayDeque<Retired>()
+    private var current: VideoFrame? = null
 
     private val windowFrames = AtomicInteger()
     @Volatile private var windowStart = clock()
@@ -213,32 +210,25 @@ class VideoDecoder(
         }
         bitmap.notifyPixelsChanged()
         bitmap.setImmutable()
-        val image = bitmap.asComposeImageBitmap()
-        retire(now = clock())
-        current?.let { superseded.addLast(Retired(it, clock())) }
-        current = bitmap
+        val image = VideoFrame(bitmap, frameLock)
+        val previous = current
+        current = image
         decodedFrames++
         windowFrames.incrementAndGet()
         _frame.value = image
         onFrame(image)
+        previous?.release() // consumers holding it get null from use()
     }
 
-    /** Releases the frames that were replaced more than [RELEASE_DELAY_MS] ago. */
-    private fun retire(now: Long) {
-        while (true) {
-            val oldest = superseded.firstOrNull() ?: return
-            if (now - oldest.at < RELEASE_DELAY_MS * 1_000_000) return
-            superseded.removeFirst().bitmap.close()
-        }
-    }
-
-    private fun tickFps() {
+    /** Under [lock], so a tick never publishes after [close] published 0. */
+    private fun tickFps(): Unit = synchronized(lock) {
+        if (closed) return
         val now = clock()
         val frames = windowFrames.getAndSet(0)
         val elapsed = now - windowStart
         windowStart = now
         if (elapsed <= 0) return
-        val value = if (closed) 0.0 else frames * 1e9 / elapsed
+        val value = frames * 1e9 / elapsed
         _fps.value = value
         runCatching { onFps(value) }
     }
@@ -267,12 +257,7 @@ class VideoDecoder(
         sws = null
         dstData.close()
         dstLinesize.close()
-        // The current frame stays valid (the Disconnected scrim draws it); the replaced ones go after the delay.
-        val pending = superseded.toList()
-        superseded.clear()
-        if (pending.isNotEmpty()) {
-            fpsTimer.schedule({ pending.forEach { it.bitmap.close() } }, RELEASE_DELAY_MS, TimeUnit.MILLISECONDS)
-        }
+        // The current frame stays valid: the Disconnected scrim draws it.
     }
 
     /** A non-owning view of native memory owned by someone else (here, a Skia bitmap's pixels). */
@@ -285,8 +270,6 @@ class VideoDecoder(
     }
 
     companion object {
-        /** How long a replaced frame stays valid (12 frames at 60 fps). */
-        const val RELEASE_DELAY_MS = 200L
         private val log = System.getLogger("scrcpyviewer.VideoDecoder")
 
         /** One daemon thread recomputes the fps of every decoder once a second. */

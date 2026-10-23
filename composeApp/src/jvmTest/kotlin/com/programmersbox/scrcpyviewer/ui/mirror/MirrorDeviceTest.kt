@@ -1,6 +1,5 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
-import androidx.compose.ui.graphics.asSkiaBitmap
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceState
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
@@ -92,14 +91,15 @@ class MirrorDeviceTest {
         s.send(ControlMessage.CollapsePanels)
         val d = s.awaitFrames(30)
         println("[device] $primary: 30 frames in ${(System.nanoTime() - start) / 1_000_000} ms, size ${s.frameSize.value}, name ${s.deviceName.value}")
-        val bitmap = d.frame.value!!.asSkiaBitmap()
-        val pixels = bitmap.readPixels()!!
+        // Copy inside use(): the frame is released as soon as the next one arrives.
+        val (png, pixels) = d.frame.value!!.use { bitmap ->
+            Image.makeFromBitmap(bitmap).encodeToData(EncodedImageFormat.PNG)!!.bytes to bitmap.readPixels()!!
+        }!!
         val distinct = (0 until pixels.size / 4).map { i -> pixels[i * 4].toInt() and 0xff }.toSet().size
         println("[device] frame content: $distinct distinct blue levels")
         assertTrue(distinct > 16, "the decoded frame is a real image, not blank")
-        val png = Image.makeFromBitmap(bitmap).encodeToData(EncodedImageFormat.PNG)!!
         Files.createDirectories(outDir)
-        Files.write(outDir.resolve("mirror-frame.png"), png.bytes)
+        Files.write(outDir.resolve("mirror-frame.png"), png)
         s.close()
     }
 

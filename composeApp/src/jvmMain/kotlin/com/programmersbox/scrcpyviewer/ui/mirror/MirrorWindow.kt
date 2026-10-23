@@ -59,7 +59,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asComposeImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
@@ -77,6 +78,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
+import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.options.CommandLine
 import com.programmersbox.scrcpyviewer.options.OptionType
 import com.programmersbox.scrcpyviewer.options.OptionValues
@@ -344,6 +346,7 @@ fun MirrorWindow(
                 MirrorContent(
                     state = state,
                     frame = frame,
+                    latestFrame = { session.frames.value },
                     onFitChange = { fit = it },
                     onAction = { send(it.messages()) },
                     onReconnect = { controller.reconnect(serial) },
@@ -378,7 +381,7 @@ fun aspectLockedStage(old: IntSize, new: IntSize, oldFrame: IntSize?, frame: Int
 @Composable
 fun MirrorContent(
     state: MirrorUiState,
-    frame: State<ImageBitmap?>,
+    frame: State<VideoFrame?>,
     onFitChange: (Boolean) -> Unit,
     onAction: (MirrorAction) -> Unit,
     onReconnect: () -> Unit,
@@ -386,6 +389,8 @@ fun MirrorContent(
     onViewSize: (IntSize) -> Unit,
     onStageSize: (IntSize) -> Unit,
     modifier: Modifier = Modifier,
+    /** The frame to draw, read at draw time ([frame] only triggers the redraw). */
+    latestFrame: () -> VideoFrame? = { frame.value },
 ) {
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxSize()) {
@@ -397,7 +402,7 @@ fun MirrorContent(
                     .background(state.background ?: colors.surfaceDim)
                     .onSizeChanged(onStageSize),
             ) {
-                Stage(state, frame, onPointer, onViewSize)
+                Stage(state, frame, latestFrame, onPointer, onViewSize)
                 if (state.status == SessionStatus.Disconnected || state.status == SessionStatus.Failed) {
                     DisconnectedScrim(state, onReconnect)
                 } else if (state.status == SessionStatus.Connecting || state.frameSize == null) {
@@ -444,7 +449,8 @@ private fun TopStrip(state: MirrorUiState, onFitChange: (Boolean) -> Unit) {
 @Composable
 private fun Stage(
     state: MirrorUiState,
-    frame: State<ImageBitmap?>,
+    frame: State<VideoFrame?>,
+    latestFrame: () -> VideoFrame?,
     onPointer: (PointerEvent) -> Unit,
     onViewSize: (IntSize) -> Unit,
 ) {
@@ -461,14 +467,11 @@ private fun Stage(
     val fs = state.frameSize
     if (state.fit || fs == null) {
         Canvas(Modifier.fillMaxSize().onSizeChanged(onViewSize).then(input)) {
-            val image = frame.value ?: return@Canvas
-            val dst = InputMapper.contentRect(IntSize(image.width, image.height), Rect(0f, 0f, size.width, size.height), state.stretch)
-            drawImage(
-                image,
-                dstOffset = IntOffset(dst.left.roundToInt(), dst.top.roundToInt()),
-                dstSize = IntSize(dst.width.roundToInt(), dst.height.roundToInt()),
-                filterQuality = FilterQuality.Low,
-            )
+            frame.value // subscribe: a new frame redraws
+            drawLatestFrame(latestFrame, FilterQuality.Low) { f ->
+                val dst = InputMapper.contentRect(IntSize(f.width, f.height), Rect(0f, 0f, size.width, size.height), state.stretch)
+                IntOffset(dst.left.roundToInt(), dst.top.roundToInt()) to IntSize(dst.width.roundToInt(), dst.height.roundToInt())
+            }
         }
     } else {
         // 1:1 (one frame pixel per screen pixel) in a scroll container.
@@ -481,13 +484,34 @@ private fun Stage(
                     Modifier.size(with(density) { DpSize(fs.width.toDp(), fs.height.toDp()) })
                         .onSizeChanged(onViewSize).then(input),
                 ) {
-                    val image = frame.value ?: return@Canvas
-                    drawImage(image, dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()), filterQuality = FilterQuality.None)
+                    frame.value // subscribe: a new frame redraws
+                    drawLatestFrame(latestFrame, FilterQuality.None) {
+                        IntOffset.Zero to IntSize(size.width.roundToInt(), size.height.roundToInt())
+                    }
                 }
             }
             VerticalScrollbar(rememberScrollbarAdapter(v), Modifier.align(Alignment.CenterEnd).fillMaxHeight())
             HorizontalScrollbar(rememberScrollbarAdapter(h), Modifier.align(Alignment.BottomCenter).fillMaxWidth())
         }
+    }
+}
+
+/**
+ * Draws the latest frame inside [VideoFrame.use], so a released bitmap is never touched. A frame released between
+ * the read and the draw (a newer one was just published) is retried with the newer one.
+ */
+private fun DrawScope.drawLatestFrame(
+    latest: () -> VideoFrame?,
+    quality: FilterQuality,
+    placement: (VideoFrame) -> Pair<IntOffset, IntSize>,
+) {
+    repeat(3) {
+        val f = latest() ?: return
+        val drawn = f.use { bitmap ->
+            val (offset, size) = placement(f)
+            drawImage(bitmap.asComposeImageBitmap(), dstOffset = offset, dstSize = size, filterQuality = quality)
+        }
+        if (drawn != null) return
     }
 }
 

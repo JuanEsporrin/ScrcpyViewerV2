@@ -1,7 +1,7 @@
 package com.programmersbox.scrcpyviewer.scrcpy
 
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.unit.IntSize
+import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -88,9 +88,9 @@ class ScrcpySession(
     /** Decoded frames per second, published by the video sink (Task 12). */
     val fps: StateFlow<Double> = _fps.asStateFlow()
 
-    private val _frames = MutableStateFlow<ImageBitmap?>(null)
-    /** Latest decoded frame, published by the video sink (Task 12) through [publishFrame]. */
-    val frames: StateFlow<ImageBitmap?> = _frames.asStateFlow()
+    private val _frames = MutableStateFlow<VideoFrame?>(null)
+    /** Latest decoded frame, published by the video sink through [publishFrame]. Read pixels with [VideoFrame.use]. */
+    val frames: StateFlow<VideoFrame?> = _frames.asStateFlow()
 
     private val _deviceName = MutableStateFlow<String?>(null)
     /** Device name from the device meta, once connected. */
@@ -153,7 +153,7 @@ class ScrcpySession(
     }
 
     /** For the video sink: publishes the latest decoded frame. */
-    fun publishFrame(frame: ImageBitmap?) {
+    fun publishFrame(frame: VideoFrame?) {
         _frames.value = frame
     }
 
