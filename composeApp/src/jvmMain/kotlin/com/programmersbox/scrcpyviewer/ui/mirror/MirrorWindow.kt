@@ -163,7 +163,7 @@ data class MirrorUiState(
     val actionsEnabled: Boolean = true,
     /** Set while the UHID mouse holds the pointer: "Mouse captured — press <key> to release". */
     val captureHint: String? = null,
-    /** "No audio from device" when the device sent no audio stream. */
+    /** "No audio from device" when the device sent no audio stream, "No audio output device" when it cannot play. */
     val audioNote: String? = null,
     /** A frame is shown, so a screenshot can be taken. */
     val screenshotEnabled: Boolean = false,
@@ -250,6 +250,7 @@ fun MirrorWindow(
     val frameSize by session.frameSize.collectAsState()
     val fps by session.fps.collectAsState()
     val audioDisabled by session.audioDisabledByDevice.collectAsState()
+    val audioPlaybackError by session.audioPlaybackError.collectAsState()
     val frame = session.frames.collectAsState()
     val reconnectable by controller.reconnectable.collectAsState()
     val recording by session.recording.collectAsState()
@@ -415,7 +416,7 @@ fun MirrorWindow(
         command = CommandLine.build(serial, values),
         background = parseHexColor(e["background-color"]),
         actionsEnabled = status == SessionStatus.Running && "no-control" !in e,
-        audioNote = if (audioDisabled) "No audio from device" else null,
+        audioNote = if (audioDisabled) "No audio from device" else audioPlaybackError,
         captureHint = if (captured && windowFocused) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
         screenshotEnabled = frame.value != null,
         recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),

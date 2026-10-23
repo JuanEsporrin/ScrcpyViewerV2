@@ -100,12 +100,13 @@ class ScrcpySessionTest {
         launcher: ConnectionStarter,
         values: Map<String, String?> = emptyMap(),
         sink: VideoSink = RecordingVideoSink(),
+        audioFactory: (Int, ScrcpySession) -> AudioSink? = { _, _ -> null },
     ) = ScrcpySession(
         serial = "SER",
         values = OptionValues(values),
         launcher = launcher,
         decoderFactory = { _, _ -> sink },
-        audioFactory = { _, _ -> null },
+        audioFactory = audioFactory,
         scope = parent,
     )
 
@@ -133,9 +134,13 @@ class ScrcpySessionTest {
         assertTrue(parentJob.isActive)
     }
 
-    private suspend fun audioSession(codec: Int, values: Map<String, String?>): Pair<ScrcpySession, DeviceEnds> {
+    private suspend fun audioSession(
+        codec: Int,
+        values: Map<String, String?>,
+        audioFactory: (Int, ScrcpySession) -> AudioSink? = { _, _ -> null },
+    ): Pair<ScrcpySession, DeviceEnds> {
         val launcher = LocalPairLauncher(audio = true)
-        val s = session(launcher, values)
+        val s = session(launcher, values, audioFactory = audioFactory)
         s.await(SessionStatus.Running)
         val dev = launcher.device.await()
         DataOutputStream(dev.audio!!.getOutputStream()).apply { writeInt(codec); flush() }
@@ -151,6 +156,30 @@ class ScrcpySessionTest {
             s.close()
             listOfNotNull(dev.video, dev.audio, dev.control).forEach { it.close() }
         }
+    }
+
+    /** What AudioSystem.getSourceDataLine throws when the computer has no output device. */
+    private val noOutput: (Int, ScrcpySession) -> AudioSink? =
+        { _, _ -> throw IllegalArgumentException("No line matching interface SourceDataLine is supported.") }
+
+    @Test
+    fun `no audio output device is noted and mirroring goes on`() = runBlocking {
+        val (s, dev) = audioSession(StreamProtocol.CODEC_OPUS, emptyMap(), noOutput)
+        withTimeout(5_000) { s.audioPlaybackError.first { it != null } }
+        assertEquals("No audio output device", s.audioPlaybackError.value)
+        assertEquals(SessionStatus.Running, s.status.value)
+        s.close()
+        listOfNotNull(dev.video, dev.audio, dev.control).forEach { it.close() }
+    }
+
+    @Test
+    fun `no audio output device fails the session with require-audio`() = runBlocking {
+        val (s, dev) = audioSession(StreamProtocol.CODEC_OPUS, mapOf("require-audio" to null), noOutput)
+        withTimeout(5_000) { s.status.first { it == SessionStatus.Failed } }
+        val error = s.error.value.orEmpty()
+        assertTrue("No audio output device" in error && "require-audio" in error, "error: $error")
+        s.close()
+        listOfNotNull(dev.video, dev.audio, dev.control).forEach { it.close() }
     }
 
     @Test

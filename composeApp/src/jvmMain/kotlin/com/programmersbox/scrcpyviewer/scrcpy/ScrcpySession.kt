@@ -38,6 +38,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.Socket
+import javax.sound.sampled.LineUnavailableException
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -119,6 +120,13 @@ class ScrcpySession(
     private val _audioDisabledByDevice = MutableStateFlow(false)
     /** The device sent no audio (codec id 0 = disabled, 1 = error) and `require-audio` is off: video only. */
     val audioDisabledByDevice: StateFlow<Boolean> = _audioDisabledByDevice.asStateFlow()
+
+    private val _audioPlaybackError = MutableStateFlow<String?>(null)
+    /**
+     * Why the audio stream is not played ("No audio output device"), when the playback sink could not be created
+     * and `require-audio` is off (with it, the session fails instead). The stream is still read, for recording.
+     */
+    val audioPlaybackError: StateFlow<String?> = _audioPlaybackError.asStateFlow()
 
     private val _deviceMessages = MutableSharedFlow<DeviceMessage>(
         extraBufferCapacity = 64,
@@ -443,7 +451,24 @@ class ScrcpySession(
             markAudioAbsent()
             return
         }
-        createSink("audio") { audioFactory(codec, this) }?.let { audioSinks += it }
+        val player = try {
+            audioFactory(codec, this)
+        } catch (t: Throwable) {
+            log.log(System.Logger.Level.WARNING, "Could not open audio playback of $serial", t)
+            // Java Sound: IllegalArgumentException (no matching line) or LineUnavailableException (none free).
+            val note = if (t is IllegalArgumentException || t is LineUnavailableException) {
+                "No audio output device"
+            } else {
+                "Audio playback failed"
+            }
+            if ("require-audio" in values.entries) {
+                fail("$note (require-audio is set): ${t.message ?: t}")
+                return
+            }
+            _audioPlaybackError.value = note
+            null
+        }
+        player?.let { audioSinks += it }
         synchronized(audioLock) {
             audioCodec = codec
             dispatchAudio { onCodec(codec) }
