@@ -14,6 +14,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.file.Paths
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
@@ -64,16 +66,22 @@ class DeviceTrackerTest {
 
     @Test
     fun `emits each push`() = runBlocking {
-        serve({ s -> send(s, "OKAY" + frame(one) + frame(two)); Thread.sleep(2000) })
+        val firstSeen = CountDownLatch(1)
+        serve({ s ->
+            send(s, "OKAY" + frame(one))
+            firstSeen.await(5, TimeUnit.SECONDS)
+            send(s, frame(two))
+            Thread.sleep(2000)
+        })
         val client = FakeClient(server.localPort)
         val tracker = DeviceTracker(client, scope)
-        withTimeout(5000) {
-            val l1 = tracker.devices.first { it.size == 1 }
-            assertEquals("39121FDJH004AB", l1.single().serial)
-            val l2 = tracker.devices.first { it.size == 2 }
-            assertEquals(listOf("39121FDJH004AB", "ZY22H8KLMN"), l2.map { it.serial })
-            assertTrue(tracker.connected.value)
-        }
+        val seen = Collections.synchronizedList(mutableListOf<List<Device>>())
+        val job = tracker.devices.onEach { seen += it; if (it.size == 1) firstSeen.countDown() }.launchIn(scope)
+        withTimeout(5000) { while (seen.none { it.size == 2 }) kotlinx.coroutines.delay(10) }
+        job.cancel()
+        val nonEmpty = seen.filter { it.isNotEmpty() }.map { l -> l.map { it.serial } }.fold(listOf<List<String>>()) { acc, l -> if (acc.lastOrNull() == l) acc else acc + listOf(l) }
+        assertEquals(listOf(listOf("39121FDJH004AB"), listOf("39121FDJH004AB", "ZY22H8KLMN")), nonEmpty)
+        assertTrue(tracker.connected.value)
     }
 
     @Test
@@ -86,11 +94,15 @@ class DeviceTrackerTest {
         val tracker = DeviceTracker(client, scope, initialBackoffMs = 20, maxBackoffMs = 100)
         val seen = Collections.synchronizedList(mutableListOf<Boolean>())
         val job = tracker.connected.onEach { seen += it }.launchIn(scope)
+        val devicesWhileDown = Collections.synchronizedList(mutableListOf<List<Device>>())
+        val job2 = tracker.connected.onEach { if (!it) devicesWhileDown += tracker.devices.value }.launchIn(scope)
         withTimeout(5000) {
             tracker.devices.first { it.size == 2 }
             while (seen.size < 4 || seen.last() != true) kotlinx.coroutines.delay(10)
         }
         job.cancel()
+        job2.cancel()
+        assertTrue(devicesWhileDown.isNotEmpty() && devicesWhileDown.all { it.isEmpty() })
         val collapsed = seen.fold(listOf<Boolean>()) { acc, b -> if (acc.lastOrNull() == b) acc else acc + b }
         assertEquals(listOf(false, true, false, true), collapsed)
         assertTrue(client.startServerCalls.get() >= 1)

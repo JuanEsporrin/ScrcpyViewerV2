@@ -1,9 +1,9 @@
 package com.programmersbox.scrcpyviewer.adb
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -12,7 +12,9 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 
 data class ProcessResult(val exitCode: Int, val stdout: String, val stderr: String)
 
@@ -21,9 +23,10 @@ open class AdbClient(
     private val adbPath: () -> Path,
     private val host: String = "127.0.0.1",
     private val port: Int = 5037,
+    private val startServerTimeoutMs: Long = 10_000,
 ) {
     open suspend fun startServer() {
-        val result = exec("start-server")
+        val result = runAdb(listOf("start-server"), startServerTimeoutMs)
         if (result.exitCode != 0) throw IOException("adb start-server failed (${result.exitCode}): ${result.stderr.trim()}")
     }
 
@@ -42,21 +45,43 @@ open class AdbClient(
         }
     }
 
-    /** Runs the adb binary with [args] (push, reverse, forward, start-server...). */
-    open suspend fun exec(vararg args: String): ProcessResult = withContext(Dispatchers.IO) {
-        val process = ProcessBuilder(listOf(adbPath().toString()) + args).start()
-        process.outputStream.close()
+    /** Runs the adb binary with [args] (push, reverse, forward...). Cancellable; no time limit. */
+    open suspend fun exec(vararg args: String): ProcessResult = runAdb(args.toList(), null)
+
+    /**
+     * Output goes to temp files rather than pipes: `adb start-server` forks a daemon that inherits and holds
+     * pipe ends open, so reading a pipe to EOF could block forever. The wait is interruptible, and the process
+     * is destroyed on timeout or cancellation.
+     */
+    private suspend fun runAdb(args: List<String>, timeoutMs: Long?): ProcessResult = withContext(Dispatchers.IO) {
+        val outFile = Files.createTempFile("adb-out", ".txt")
+        val errFile = Files.createTempFile("adb-err", ".txt")
+        var process: Process? = null
         try {
-            coroutineScope {
-                val stdout = async { process.inputStream.readBytes() }
-                val stderr = async { process.errorStream.readBytes() }
-                val exit = process.waitFor()
-                ProcessResult(exit, String(stdout.await(), Charsets.UTF_8), String(stderr.await(), Charsets.UTF_8))
+            val started = ProcessBuilder(listOf(adbPath().toString()) + args)
+                .redirectInput(ProcessBuilder.Redirect.from(nullFile()))
+                .redirectOutput(outFile.toFile())
+                .redirectError(errFile.toFile())
+                .start()
+            process = started
+            val exit = runInterruptible {
+                if (timeoutMs == null) {
+                    started.waitFor()
+                } else if (started.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    started.exitValue()
+                } else {
+                    throw IOException("adb ${args.joinToString(" ")} timed out after $timeoutMs ms")
+                }
             }
+            ProcessResult(exit, Files.readString(outFile), Files.readString(errFile))
         } finally {
-            process.destroy()
+            process?.takeIf { it.isAlive }?.destroyForcibly()
+            Files.deleteIfExists(outFile)
+            Files.deleteIfExists(errFile)
         }
     }
+
+    private fun nullFile() = java.io.File(if (System.getProperty("os.name").lowercase().contains("win")) "NUL" else "/dev/null")
 
     /**
      * Cold flow of `host:track-devices-l` payloads. Completes when the server closes the stream and
