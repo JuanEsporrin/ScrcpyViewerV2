@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.adb
 
+import com.programmersbox.scrcpyviewer.assumePosix
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -13,6 +14,7 @@ import kotlin.test.assertTrue
 
 class AdbClientTest {
     private fun stub(body: String): Path {
+        assumePosix() // sh stub scripts
         val f = Files.createTempFile("fake-adb", ".sh")
         Files.writeString(f, "#!/bin/sh\n$body\n")
         f.toFile().setExecutable(true)

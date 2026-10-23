@@ -86,6 +86,7 @@ val downloadBundledTools = tasks.register("downloadBundledTools") {
     val serverSha = scrcpyServerSha256
     val targets = platformToolsTargets
     val root = bundledDir
+    val isWindowsHost = System.getProperty("os.name").lowercase().contains("win")
     doLast {
         fun download(url: String, dest: File) {
             dest.parentFile.mkdirs()
@@ -112,7 +113,8 @@ val downloadBundledTools = tasks.register("downloadBundledTools") {
                     val entry = zf.getEntry("platform-tools/$name") ?: error("$name missing from $zip")
                     val out = outDir.resolve(name)
                     zf.getInputStream(entry).use { ins -> out.outputStream().use { ins.copyTo(it) } }
-                    if (!name.contains('.') || name == "adb.exe") out.setExecutable(true)
+                    // Executable bit is meaningless on Windows; skip it there.
+                    if (!isWindowsHost && !name.contains('.')) out.setExecutable(true)
                 }
             }
         }

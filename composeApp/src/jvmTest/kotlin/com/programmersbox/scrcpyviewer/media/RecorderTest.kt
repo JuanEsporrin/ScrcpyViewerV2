@@ -192,6 +192,8 @@ class RecorderTest {
         Files.write(file, "keep".toByteArray())
         check(file.toFile().setWritable(false))
         try {
+            // Skip where read-only is not enforced (running as root).
+            org.junit.Assume.assumeTrue("read-only not enforced", !Files.isWritable(file))
             val result = record(file, "mp4", meta, null) { feedVideo(loadH264Sample()) }
             assertIs<RecordResult.Failed>(result)
             assertTrue("Failed to open output file" in result.message, result.message)

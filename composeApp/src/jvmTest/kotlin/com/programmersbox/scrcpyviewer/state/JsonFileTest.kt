@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.state
 
+import com.programmersbox.scrcpyviewer.assumePosix
 import kotlinx.serialization.Serializable
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
@@ -43,6 +44,7 @@ class JsonFileTest {
 
     @Test
     fun `read IOException does not move the file`() {
+        assumePosix()
         Files.writeString(path, "{\"n\":1}")
         val perms = PosixFilePermissions.fromString("---------")
         Files.setPosixFilePermissions(path, perms)

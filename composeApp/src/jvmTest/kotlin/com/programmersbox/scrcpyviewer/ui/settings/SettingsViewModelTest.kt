@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.settings
 
+import com.programmersbox.scrcpyviewer.assumePosix
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetStore
@@ -28,8 +29,10 @@ class SettingsViewModelTest {
         settings, presets, { bundled }, { version(it) }, { restarts++ }, scope,
     )
 
-    private fun executable(name: String): Path =
-        Files.createFile(dir.resolve(name)).also { Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwxr-xr-x")) }
+    private fun executable(name: String): Path {
+        assumePosix()
+        return Files.createFile(dir.resolve(name)).also { Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwxr-xr-x")) }
+    }
 
     @Test
     fun `theme change is saved`() {
@@ -41,6 +44,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `missing and non-executable adb paths are rejected and not saved`() {
+        assumePosix()
         val vm = vm()
         vm.useCustomAdb(dir.resolve("nope").toString())
         assertNotNull(vm.state.value.adbPathError)
