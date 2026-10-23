@@ -49,6 +49,16 @@ open class AdbClient(
     open suspend fun exec(vararg args: String): ProcessResult = runAdb(args.toList(), null)
 
     /**
+     * Starts the adb binary with [args] as a long-running process (the scrcpy server's `adb shell`). stdin is
+     * empty and stderr is merged into stdout; the caller must drain [Process.getInputStream] and destroy the process.
+     */
+    open fun startProcess(vararg args: String): Process =
+        ProcessBuilder(listOf(adbPath().toString()) + args)
+            .redirectInput(ProcessBuilder.Redirect.from(nullFile()))
+            .redirectErrorStream(true)
+            .start()
+
+    /**
      * Output goes to temp files rather than pipes: `adb start-server` forks a daemon that inherits and holds
      * pipe ends open, so reading a pipe to EOF could block forever. The wait is interruptible, and the process
      * is destroyed on timeout or cancellation.
