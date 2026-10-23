@@ -96,6 +96,10 @@ class ScrcpySession(
     /** Device name from the device meta, once connected. */
     val deviceName: StateFlow<String?> = _deviceName.asStateFlow()
 
+    private val _audioDisabledByDevice = MutableStateFlow(false)
+    /** The device sent no audio (codec id 0 = disabled, 1 = error) and `require-audio` is off: video only. */
+    val audioDisabledByDevice: StateFlow<Boolean> = _audioDisabledByDevice.asStateFlow()
+
     private val _deviceMessages = MutableSharedFlow<DeviceMessage>(
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -271,20 +275,22 @@ class ScrcpySession(
         }
     }
 
-    /** Returns normally only when the device disabled audio (or it failed without `require-audio`). */
+    /**
+     * Returns normally only when the device sent no audio (codec id 0 or 1): then the session keeps mirroring video
+     * and flags [audioDisabledByDevice], or fails with `require-audio`.
+     */
     private fun readAudio(socket: Socket) {
         val input = DataInputStream(BufferedInputStream(socket.getInputStream(), STREAM_BUFFER))
         val codec = readAudioCodecId(input)
-        when (codec) {
-            StreamProtocol.CODEC_DISABLED -> {
-                log.log(System.Logger.Level.WARNING, "Audio stream disabled by the device ($serial)")
+        if (codec == StreamProtocol.CODEC_DISABLED || codec == StreamProtocol.CODEC_ERROR) {
+            val what = if (codec == StreamProtocol.CODEC_DISABLED) "disabled on the device" else "failed on the device"
+            if ("require-audio" in values.entries) {
+                fail("Audio $what (require-audio is set)")
                 return
             }
-            StreamProtocol.CODEC_ERROR -> {
-                if ("require-audio" in values.entries) throw IOException("Audio failed on the device")
-                log.log(System.Logger.Level.WARNING, "Audio failed on the device ($serial), mirroring video only")
-                return
-            }
+            log.log(System.Logger.Level.WARNING, "Audio $what ($serial), mirroring video only")
+            _audioDisabledByDevice.value = true
+            return
         }
         createSink("audio") { audioFactory(codec, this) }?.let { audioSinks += it }
         synchronized(audioLock) {

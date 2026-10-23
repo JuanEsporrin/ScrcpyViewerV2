@@ -7,6 +7,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
+import com.programmersbox.scrcpyviewer.media.AudioPlayer
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
 import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
 import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
@@ -86,7 +87,7 @@ class AppGraph {
             ScrcpySession(
                 serial, values, serverLauncher,
                 decoderFactory = { meta, session -> VideoDecoder(meta.codecId, session::publishFrame, session::publishFps) },
-                audioFactory = { _, _ -> null }, // audio playback: Task 13
+                audioFactory = { codecId, _ -> AudioPlayer.forOptions(codecId, values) },
                 scope = scope,
             )
         },

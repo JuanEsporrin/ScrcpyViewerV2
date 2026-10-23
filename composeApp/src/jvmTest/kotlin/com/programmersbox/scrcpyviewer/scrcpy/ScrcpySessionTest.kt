@@ -130,6 +130,37 @@ class ScrcpySessionTest {
         assertTrue(parentJob.isActive)
     }
 
+    private suspend fun audioSession(codec: Int, values: Map<String, String?>): Pair<ScrcpySession, DeviceEnds> {
+        val launcher = LocalPairLauncher(audio = true)
+        val s = session(launcher, values)
+        s.await(SessionStatus.Running)
+        val dev = launcher.device.await()
+        DataOutputStream(dev.audio!!.getOutputStream()).apply { writeInt(codec); flush() }
+        return s to dev
+    }
+
+    @Test
+    fun `audio disabled or failing on the device keeps mirroring and flags no audio`() = runBlocking {
+        for (codec in listOf(StreamProtocol.CODEC_DISABLED, StreamProtocol.CODEC_ERROR)) {
+            val (s, dev) = audioSession(codec, emptyMap())
+            withTimeout(5_000) { s.audioDisabledByDevice.first { it } }
+            assertEquals(SessionStatus.Running, s.status.value)
+            s.close()
+            listOfNotNull(dev.video, dev.audio, dev.control).forEach { it.close() }
+        }
+    }
+
+    @Test
+    fun `require-audio fails the session when the device has no audio`() = runBlocking {
+        for (codec in listOf(StreamProtocol.CODEC_DISABLED, StreamProtocol.CODEC_ERROR)) {
+            val (s, dev) = audioSession(codec, mapOf("require-audio" to null))
+            withTimeout(5_000) { s.status.first { it == SessionStatus.Failed } }
+            assertTrue(s.error.value.orEmpty().contains("require-audio"), "error: ${s.error.value}")
+            s.close()
+            listOfNotNull(dev.video, dev.audio, dev.control).forEach { it.close() }
+        }
+    }
+
     @Test
     fun `two sessions get distinct scid and port`() = runBlocking {
         val adbA = FakeAdb()
