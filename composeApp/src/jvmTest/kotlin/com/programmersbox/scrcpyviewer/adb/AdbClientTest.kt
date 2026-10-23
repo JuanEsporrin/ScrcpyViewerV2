@@ -4,7 +4,6 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -28,11 +27,21 @@ class AdbClientTest {
     }
 
     @Test
-    fun `startServer returns when a forked daemon keeps the output open`() = runBlocking {
-        val adb = stub("(sleep 5) &\nexit 0")
-        val start = System.nanoTime()
-        withTimeout(3000) { AdbClient({ adb }).startServer() }
-        assertTrue((System.nanoTime() - start) / 1_000_000 < 3000)
+    fun `startServer returns while a forked daemon keeps the output open`() = runBlocking {
+        val marker = Files.createTempFile("daemon-pid", ".txt")
+        val adb = stub("sleep 30 &\necho \$! > '$marker'\nexit 0")
+        var daemon: ProcessHandle? = null
+        try {
+            // Generous timeout: if startServer still waited on the daemon's output it would throw the timeout error.
+            AdbClient({ adb }, startServerTimeoutMs = 20_000).startServer()
+            // The stub wrote the daemon pid before exiting; the daemon must still be running, so startServer
+            // did not wait for it (no time bound needed).
+            daemon = ProcessHandle.of(Files.readString(marker).trim().toLong()).orElse(null)
+            assertTrue(daemon != null && daemon.isAlive, "daemon should still be alive when startServer returns")
+        } finally {
+            daemon?.destroyForcibly()
+            Files.deleteIfExists(marker)
+        }
     }
 
     @Test
