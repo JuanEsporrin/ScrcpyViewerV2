@@ -187,10 +187,10 @@ data class FieldSync(val text: String, val pending: List<String> = emptyList()) 
 
 /** Decides what the field shows when the upstream (stored) value becomes [upstream]. */
 fun reconcile(state: FieldSync, upstream: String): FieldSync {
-    if (upstream == state.text) return FieldSync(state.text)
+    // Consume sends in order: an echo of something we typed (possibly lagging) keeps the newer text.
     val idx = state.pending.indexOf(upstream)
-    // A lagging echo of something we typed: keep the newer text and wait for the rest.
     if (idx >= 0) return state.copy(pending = state.pending.drop(idx + 1))
+    if (upstream == state.text) return state
     // Anything else (preset applied, option reset) is authoritative.
     return FieldSync(upstream)
 }

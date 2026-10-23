@@ -39,4 +39,14 @@ class FieldSyncTest {
         // field later shows stale text only if state was not reset; upstream "" with text "x" must win
         assertEquals(FieldSync(""), reconcile(FieldSync("x"), ""))
     }
+
+    @Test
+    fun `typing then deleting keeps text through ordered echoes`() {
+        var s = FieldSync("").typed("1").typed("12").typed("1")
+        for (echo in listOf("1", "12", "1")) {
+            s = reconcile(s, echo)
+            assertEquals("1", s.text)
+        }
+        assertEquals(emptyList(), s.pending)
+    }
 }
