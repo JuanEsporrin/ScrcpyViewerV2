@@ -53,6 +53,7 @@ fun OptionRow(
     onCheckedChange: (Boolean) -> Unit,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
+    fieldKey: Any? = null,
 ) {
     Column(modifier.fillMaxWidth()) {
         Row(
@@ -73,7 +74,7 @@ fun OptionRow(
                 )
             }
             if (spec.type !is OptionType.Flag) {
-                ValueField(spec.type, checked, value.orEmpty(), error != null, onValueChange, Modifier.width(140.dp))
+                ValueField(spec.type, checked, value.orEmpty(), error != null, Pair(fieldKey, spec.flag), onValueChange, Modifier.width(140.dp))
             }
         }
         if (error != null && checked) {
@@ -93,6 +94,7 @@ private fun ValueField(
     enabled: Boolean,
     value: String,
     isError: Boolean,
+    fieldKey: Any?,
     onValueChange: (String) -> Unit,
     modifier: Modifier,
 ) {
@@ -102,16 +104,9 @@ private fun ValueField(
         return
     }
     // Local text state: the upstream value arrives asynchronously, so echoing it back would drop characters and
-    // move the caret. Upstream values we sent ourselves are ignored; anything else (preset applied, option
-    // unchecked) replaces the text.
-    var text by remember { mutableStateOf(value) }
-    val sent = remember { mutableSetOf<String>() }
-    LaunchedEffect(value) {
-        if (value != text && value !in sent) {
-            text = value
-            sent.clear()
-        }
-    }
+    // move the caret. Reset when the device, option or checked state changes.
+    var sync by remember(fieldKey, enabled) { mutableStateOf(FieldSync(value)) }
+    LaunchedEffect(value) { sync = reconcile(sync, value) }
     val textStyle = MaterialTheme.typography.bodySmall.copy(
         color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
         fontFamily = FontFamily.Monospace,
@@ -119,10 +114,9 @@ private fun ValueField(
     )
     val interaction = remember { MutableInteractionSource() }
     BasicTextField(
-        value = text,
+        value = sync.text,
         onValueChange = {
-            text = it
-            sent += it
+            sync = sync.typed(it)
             onValueChange(it)
         },
         enabled = enabled,
@@ -133,7 +127,7 @@ private fun ValueField(
         modifier = modifier,
         decorationBox = { innerTextField ->
             OutlinedTextFieldDefaults.DecorationBox(
-                value = text,
+                value = sync.text,
                 innerTextField = innerTextField,
                 enabled = enabled,
                 singleLine = true,
@@ -181,4 +175,22 @@ private fun placeholder(type: OptionType): String = when (type) {
     OptionType.Decimal -> "number"
     is OptionType.Formatted -> type.example
     else -> "value"
+}
+
+/**
+ * Text shown in a value field plus the values we sent upstream that have not been echoed back yet.
+ * Only in-flight sends are remembered; once upstream catches up, `pending` is empty.
+ */
+data class FieldSync(val text: String, val pending: List<String> = emptyList()) {
+    fun typed(new: String) = FieldSync(new, pending + new)
+}
+
+/** Decides what the field shows when the upstream (stored) value becomes [upstream]. */
+fun reconcile(state: FieldSync, upstream: String): FieldSync {
+    if (upstream == state.text) return FieldSync(state.text)
+    val idx = state.pending.indexOf(upstream)
+    // A lagging echo of something we typed: keep the newer text and wait for the rest.
+    if (idx >= 0) return state.copy(pending = state.pending.drop(idx + 1))
+    // Anything else (preset applied, option reset) is authoritative.
+    return FieldSync(upstream)
 }

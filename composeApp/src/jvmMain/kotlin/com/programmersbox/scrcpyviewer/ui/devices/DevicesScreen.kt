@@ -284,6 +284,7 @@ private fun OptionColumn(
                 val checked = spec.flag in state.values.entries
                 OptionRow(
                     spec = spec,
+                    fieldKey = state.selectedSerial,
                     checked = checked,
                     value = state.values.entries[spec.flag],
                     error = state.errors[spec.flag],
