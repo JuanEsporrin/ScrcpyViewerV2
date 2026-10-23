@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
+import com.programmersbox.scrcpyviewer.AppIcon
 import com.programmersbox.scrcpyviewer.Os
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.scrollBy
@@ -480,6 +481,7 @@ fun MirrorWindow(
         onCloseRequest = { controller.close(serial) },
         state = windowState,
         title = mirrorTitle(model, serial, values),
+        icon = AppIcon.painter,
         alwaysOnTop = "always-on-top" in e,
     ) {
         LaunchedEffect(serial) {

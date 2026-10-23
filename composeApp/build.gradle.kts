@@ -53,8 +53,13 @@ compose.desktop {
             packageName = "ScrcpyViewer"
             packageVersion = "1.0.0"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
+            macOS { iconFile.set(project.file("icons/icon.icns")) }
+            windows { iconFile.set(project.file("icons/icon.ico")) }
             // Debian package names must be lowercase.
-            linux { packageName = "scrcpyviewer" }
+            linux {
+                packageName = "scrcpyviewer"
+                iconFile.set(project.file("icons/icon.png"))
+            }
         }
     }
 }

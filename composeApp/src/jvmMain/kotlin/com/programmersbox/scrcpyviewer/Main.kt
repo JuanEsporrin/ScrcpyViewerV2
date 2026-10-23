@@ -125,6 +125,7 @@ class AppGraph {
 }
 
 fun main() {
+    AppIcon.installTaskbarIcon()
     val graph = AppGraph()
     application {
         val settings by graph.settings.settings.collectAsState()
@@ -140,6 +141,7 @@ fun main() {
         Window(
             onCloseRequest = shutdown::request,
             title = "Scrcpy Viewer",
+            icon = AppIcon.painter,
             visible = shuttingDown == null,
         ) {
             App(graph)
@@ -159,6 +161,7 @@ private fun FinishingRecordingWindow(themeMode: ThemeMode) {
     Window(
         onCloseRequest = {},
         title = "Scrcpy Viewer",
+        icon = AppIcon.painter,
         state = rememberWindowState(size = DpSize(340.dp, 120.dp), position = WindowPosition(Alignment.Center)),
         resizable = false,
     ) {
