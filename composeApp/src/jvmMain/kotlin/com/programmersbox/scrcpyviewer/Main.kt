@@ -113,6 +113,7 @@ class AppGraph {
                 },
                 audioFactory = { codecId, _ -> AudioPlayer.forOptions(codecId, values) },
                 scope = scope,
+                captureDir = { Paths.get(settings.settings.value.captureDir) },
             )
         },
         setClipboard = { text -> Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) },

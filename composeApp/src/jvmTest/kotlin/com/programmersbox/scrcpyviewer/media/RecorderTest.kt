@@ -288,6 +288,7 @@ class RecorderTest {
         decoderFactory = { _, _ -> RecordingVideoSink() },
         audioFactory = { _, _ -> null },
         scope = scope,
+        captureDir = { dir.resolve("captures") },
     ).also { sessions += it }
 
     /** Device side of the video socket, after the codec id and session header ([videoOut]). */
@@ -332,6 +333,29 @@ class RecorderTest {
         val info = probe(file)
         assertEquals(320, info.streams.single().width)
         assertTrue(abs(info.durationSeconds - 0.5) < 0.05, "duration ${info.durationSeconds}")
+    }
+
+    @Test
+    fun `a relative record path goes to the capture directory`() = runBlocking {
+        val launcher = LocalPairLauncher(video = true, audio = false, control = false)
+        val s = session(launcher, mapOf("record" to "sub/rel.mkv"))
+        s.awaitRunning()
+        assertEquals(dir.resolve("captures/sub/rel.mkv"), s.recording.value?.file)
+        assertTrue(Files.isDirectory(dir.resolve("captures/sub")))
+        s.close()
+    }
+
+    @Test
+    fun `toolbar recordings use record-format, else mp4 unless the codecs need mkv`() {
+        fun format(vararg e: Pair<String, String?>) = Recorder.toolbarFormat(OptionValues(mapOf(*e)))
+        assertEquals("mp4", format())
+        assertEquals("mkv", format("record-format" to "mkv"))
+        assertEquals("mp4", format("record-format" to "mp4", "video-codec" to "vp9"), "an explicit format wins")
+        assertEquals("mkv", format("audio-codec" to "raw"))
+        assertEquals("mp4", format("audio-codec" to "raw", "no-audio" to null))
+        assertEquals("mkv", format("video-codec" to "vp8"))
+        assertEquals("mkv", format("video-codec" to "vp9"))
+        assertEquals("mp4", format("video-codec" to "h265", "audio-codec" to "aac"))
     }
 
     @Test

@@ -91,6 +91,8 @@ class ScrcpySession(
     private val decoderFactory: (VideoCodecMeta, ScrcpySession) -> VideoSink?,
     private val audioFactory: (Int, ScrcpySession) -> AudioSink?,
     scope: CoroutineScope,
+    /** Where a relative `record` path goes (`Settings.captureDir`); null keeps it relative to the working dir. */
+    private val captureDir: () -> Path? = { null },
 ) {
     private val _status = MutableStateFlow(SessionStatus.Connecting)
     val status: StateFlow<SessionStatus> = _status.asStateFlow()
@@ -360,10 +362,13 @@ class ScrcpySession(
         values.entries["start-app"]?.takeIf { it.isNotBlank() }?.let { send(ControlMessage.StartApp(it)) }
     }
 
-    /** `record` option: a failure is reported in [recordingResults]; mirroring goes on. */
+    /**
+     * `record` option, resolved against [captureDir] when relative: a failure is reported in [recordingResults];
+     * mirroring goes on.
+     */
     private fun startInitialRecording(path: String) {
         val file = try {
-            Paths.get(path)
+            Paths.get(path).let { p -> if (p.isAbsolute) p else captureDir()?.resolve(p) ?: p }
         } catch (e: InvalidPathException) {
             recordingResultChannel.trySend(RecordResult.Failed(null, "Invalid record path: $path"))
             return

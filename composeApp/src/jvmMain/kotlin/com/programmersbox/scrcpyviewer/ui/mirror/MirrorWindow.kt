@@ -86,6 +86,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.media.RecordResult
+import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.Screenshot
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
 import com.programmersbox.scrcpyviewer.media.VideoFrame
@@ -314,8 +315,9 @@ fun MirrorWindow(
         uiScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    val file = Screenshot.captureFile(Paths.get(currentCaptureDir), currentModel, "mp4")
-                    session.startRecording(file, "mp4")
+                    val format = Recorder.toolbarFormat(values) // every format name is also its file extension
+                    val file = Screenshot.captureFile(Paths.get(currentCaptureDir), currentModel, format)
+                    session.startRecording(file, format)
                 }
             } catch (e: Exception) {
                 notify("Could not start recording: ${e.message ?: e}")

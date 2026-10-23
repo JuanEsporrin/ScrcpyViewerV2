@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.media
 
+import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.MediaPacket
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
 import com.programmersbox.scrcpyviewer.scrcpy.VideoCodecMeta
@@ -385,6 +386,18 @@ class Recorder(
             val name = file.fileName?.toString() ?: return null
             if ('.' !in name) return null
             return name.substringAfterLast('.').takeIf { it in FORMATS }
+        }
+
+        /**
+         * Format of a recording started from the mirror window's Record button: `record-format` when set, else mp4,
+         * or mkv when the session's codecs do not fit in MP4 (raw audio, VP8/VP9 video).
+         */
+        fun toolbarFormat(values: OptionValues): String {
+            val e = values.entries
+            e["record-format"]?.takeIf { it in FORMATS }?.let { return it }
+            val videoCodec = e["video-codec"]
+            val rawAudio = e["audio-codec"] == "raw" && "no-audio" !in e
+            return if (rawAudio || videoCodec == "vp8" || videoCodec == "vp9") "mkv" else "mp4"
         }
 
         fun muxerName(format: String): String = when (format) {
