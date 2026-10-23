@@ -65,7 +65,7 @@ class DeviceOptionsStore(file: Path, private val presets: PresetStore, scope: Co
 
     fun saveAsNewPreset(serial: String, name: String): Preset = synchronized(lock) {
         val ws = flowFor(serial).value
-        val preset = Preset(UUID.randomUUID().toString(), name, options = ws.values)
+        val preset = Preset(UUID.randomUUID().toString(), presets.uniqueName(name), options = ws.values)
         presets.upsert(preset)
         flowFor(serial).value = ws.copy(basePresetId = preset.id)
         persist()

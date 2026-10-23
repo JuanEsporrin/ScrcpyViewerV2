@@ -48,7 +48,7 @@ class PresetStore(file: Path, scope: CoroutineScope) {
     fun duplicate(id: String): Preset {
         synchronized(lock) {
             val src = _presets.value.first { it.id == id }
-            val copy = src.copy(id = UUID.randomUUID().toString(), name = uniqueCopyName(src.name))
+            val copy = src.copy(id = UUID.randomUUID().toString(), name = uniqueName(src.name))
             _presets.value += copy
             save()
             return copy
@@ -59,10 +59,15 @@ class PresetStore(file: Path, scope: CoroutineScope) {
         _default.value = id?.takeIf { want -> _presets.value.any { it.id == want } }
     }
 
-    private fun uniqueCopyName(base: String): String {
-        val names = _presets.value.map { it.name.lowercase() }.toSet()
+    /** True when another preset (not [exceptId]) already has [name], ignoring case. */
+    fun isNameTaken(name: String, exceptId: String? = null): Boolean =
+        _presets.value.any { it.id != exceptId && it.name.equals(name, ignoreCase = true) }
+
+    /** [base] if free, else "[base] (2)", "[base] (3)", ... */
+    fun uniqueName(base: String): String {
+        if (!isNameTaken(base)) return base
         var n = 2
-        while ("$base ($n)".lowercase() in names) n++
+        while (isNameTaken("$base ($n)")) n++
         return "$base ($n)"
     }
 

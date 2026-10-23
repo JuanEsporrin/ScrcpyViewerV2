@@ -155,6 +155,7 @@ fun PresetsContent(
                     )
                     editingId == selected.id -> PresetEditor(
                         selected,
+                        isNameTaken = { n -> state.presets.any { it.id != selected.id && it.name.equals(n.trim(), ignoreCase = true) } },
                         onSave = { name, description, values -> onEdit(selected.id, name, description, values); editingId = null },
                         onCancel = { editingId = null },
                     )
@@ -342,19 +343,20 @@ private fun JsonPanel(json: String) {
 }
 
 @Composable
-private fun PresetEditor(preset: Preset, onSave: (String, String, OptionValues) -> Unit, onCancel: () -> Unit) {
+private fun PresetEditor(preset: Preset, isNameTaken: (String) -> Boolean, onSave: (String, String, OptionValues) -> Unit, onCancel: () -> Unit) {
     var name by remember(preset.id) { mutableStateOf(preset.name) }
     var description by remember(preset.id) { mutableStateOf(preset.description) }
     var values by remember(preset.id) { mutableStateOf(preset.options) }
     val errors = values.validate()
+    val nameTaken = isNameTaken(name)
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Edit preset", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             TextButton(onCancel) { Text("Cancel") }
-            Button({ onSave(name, description, values) }, enabled = name.isNotBlank() && errors.isEmpty()) { Text("Save") }
+            Button({ onSave(name, description, values) }, enabled = name.isNotBlank() && !nameTaken && errors.isEmpty()) { Text("Save") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }, isError = name.isBlank(), modifier = Modifier.weight(1f))
+            OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }, isError = name.isBlank() || nameTaken, supportingText = if (nameTaken) ({ Text("A preset with this name already exists") }) else null, modifier = Modifier.weight(1f))
             OutlinedTextField(description, { description = it }, singleLine = true, label = { Text("Description") }, modifier = Modifier.weight(2f))
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {

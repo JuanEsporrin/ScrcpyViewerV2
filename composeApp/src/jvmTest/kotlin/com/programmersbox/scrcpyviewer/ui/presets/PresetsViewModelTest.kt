@@ -129,6 +129,26 @@ class PresetsViewModelTest {
     }
 
     @Test
+    fun `edit rejects a name that another preset has`() {
+        val vm = vm()
+        vm.edit("low", "qa DEFAULT", "x", OptionValues(emptyMap()))
+        assertEquals(low, store.presets.value.first { it.id == "low" })
+        vm.edit("qa", "QA DEFAULT", "x", qa.options) // own name, different case: allowed
+        assertEquals("QA DEFAULT", store.presets.value.first { it.id == "qa" }.name)
+    }
+
+    @Test
+    fun `import newer version shows error and changes nothing`() {
+        val vm = vm()
+        val before = store.presets.value
+        vm.beginImport("""{"format":"scrcpyviewer-presets","version":2,"presets":[{"name":"X","options":{}}]}""")
+        val state = assertNotNull(vm.importState.value)
+        assertEquals("This file was made by a newer version of Scrcpy Viewer.", state.error)
+        vm.confirmImport()
+        assertEquals(before, store.presets.value)
+    }
+
+    @Test
     fun `apply to selected device updates working set`() {
         val vm = vm()
         assertTrue(vm.state.value.canApply)

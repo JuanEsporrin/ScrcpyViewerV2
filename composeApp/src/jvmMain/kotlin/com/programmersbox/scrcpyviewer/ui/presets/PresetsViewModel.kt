@@ -96,7 +96,7 @@ class PresetsViewModel(
 
     fun edit(id: String, name: String, description: String, values: OptionValues) {
         val trimmed = name.trim()
-        if (trimmed.isEmpty() || store.presets.value.none { it.id == id }) return
+        if (trimmed.isEmpty() || store.presets.value.none { it.id == id } || store.isNameTaken(trimmed, exceptId = id)) return
         store.upsert(Preset(id, trimmed, description, values))
     }
 

@@ -64,6 +64,19 @@ class DeviceOptionsStoreTest {
     }
 
     @Test
+    fun `saveAsNewPreset picks a unique name`() {
+        presets.upsert(a)
+        val s = store()
+        s.workingSet("S1")
+        val first = s.saveAsNewPreset("S1", "a")
+        val second = s.saveAsNewPreset("S1", "A")
+        assertEquals("a (2)", first.name)
+        assertEquals("A (3)", second.name)
+        assertEquals(second.id, s.workingSet("S1").value.basePresetId)
+        assertEquals(listOf("A", "a (2)", "A (3)"), presets.presets.value.map { it.name })
+    }
+
+    @Test
     fun `saveAsNewPreset rebases`() {
         presets.upsert(a)
         presets.setDefault("a")
