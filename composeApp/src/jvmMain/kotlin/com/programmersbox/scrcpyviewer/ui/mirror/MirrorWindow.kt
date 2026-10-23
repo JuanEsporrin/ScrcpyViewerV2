@@ -40,7 +40,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,6 +82,8 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.programmersbox.scrcpyviewer.adb.Device
+import com.programmersbox.scrcpyviewer.media.RecordResult
+import com.programmersbox.scrcpyviewer.media.Screenshot
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
 import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.options.CommandLine
@@ -93,8 +99,12 @@ import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
@@ -102,6 +112,7 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.awt.event.KeyEvent as AwtKeyEvent
+import java.nio.file.Paths
 import javax.swing.SwingUtilities
 import kotlin.math.abs
 import kotlin.math.min
@@ -120,7 +131,7 @@ enum class MirrorAction(val label: String, val keycode: Int? = null) {
     Record("Record"),
 }
 
-/** Control messages for a toolbar action; Screenshot and Record (Task 14) send nothing. */
+/** Control messages for a toolbar action; Screenshot and Record send nothing (the window handles them). */
 fun MirrorAction.messages(): List<ControlMessage> = when {
     keycode != null -> listOf(
         ControlMessage.InjectKeycode(InputMapper.KEY_ACTION_DOWN, keycode, 0, 0),
@@ -151,7 +162,19 @@ data class MirrorUiState(
     val captureHint: String? = null,
     /** "No audio from device" when the device sent no audio stream. */
     val audioNote: String? = null,
+    /** A frame is shown, so a screenshot can be taken. */
+    val screenshotEnabled: Boolean = false,
+    /** Recording can be started (session running) or stopped. */
+    val recordEnabled: Boolean = false,
+    /** "● REC mm:ss" while recording. */
+    val recordingLabel: String? = null,
 )
+
+/** "● REC mm:ss" for a recording running for [elapsedNanos]. */
+fun recordingLabel(elapsedNanos: Long): String {
+    val seconds = (elapsedNanos / 1_000_000_000L).coerceAtLeast(0)
+    return "● REC %02d:%02d".format(seconds / 60, seconds % 60)
+}
 
 /** `<model> · <serial>`, or the `window-title` option. */
 fun mirrorTitle(model: String, serial: String, values: OptionValues): String =
@@ -204,6 +227,8 @@ fun MirrorWindow(
     session: ScrcpySession,
     controller: MirrorController,
     themeMode: ThemeMode,
+    /** `Settings.captureDir`: where screenshots and recordings started from the toolbar go. */
+    captureDir: String,
 ) {
     val values = session.values
     val e = values.entries
@@ -222,6 +247,70 @@ fun MirrorWindow(
     val audioDisabled by session.audioDisabledByDevice.collectAsState()
     val frame = session.frames.collectAsState()
     val reconnectable by controller.reconnectable.collectAsState()
+    val recording by session.recording.collectAsState()
+    val currentCaptureDir by rememberUpdatedState(captureDir)
+    val currentModel by rememberUpdatedState(model)
+    val snackbar = remember { SnackbarHostState() }
+    val uiScope = rememberCoroutineScope()
+    fun notify(message: String) {
+        uiScope.launch { snackbar.showSnackbar(message) }
+    }
+    LaunchedEffect(session) {
+        session.recordingResults.collect { r ->
+            notify(
+                when (r) {
+                    is RecordResult.Saved -> "Recording saved to ${r.file}"
+                    is RecordResult.Failed -> "Recording failed: ${r.message}"
+                }
+            )
+        }
+    }
+    var recordingElapsed by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(recording) {
+        val r = recording
+        recordingElapsed = null
+        while (r != null) {
+            val elapsed = System.nanoTime() - r.startedNanos
+            recordingElapsed = recordingLabel(elapsed)
+            delay(1_000 - (elapsed / 1_000_000) % 1_000) // tick on the second
+        }
+    }
+
+    /** Copies the frame now (inside VideoFrame.use), encodes and writes the PNG on the IO dispatcher. */
+    fun takeScreenshot() {
+        val bitmap = Screenshot.copyLatest { session.frames.value }
+        if (bitmap == null) {
+            notify("No frame to capture yet")
+            return
+        }
+        uiScope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    Screenshot.save(bitmap, Paths.get(currentCaptureDir), currentModel)
+                }
+                notify("Screenshot saved to $file")
+            } catch (e: Exception) {
+                notify("Could not save the screenshot: ${e.message ?: e}")
+            }
+        }
+    }
+
+    fun toggleRecording() {
+        if (session.recording.value != null) {
+            session.stopRecording() // "Recording saved to …" comes from recordingResults
+            return
+        }
+        uiScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val file = Screenshot.captureFile(Paths.get(currentCaptureDir), currentModel, "mp4")
+                    session.startRecording(file, "mp4")
+                }
+            } catch (e: Exception) {
+                notify("Could not start recording: ${e.message ?: e}")
+            }
+        }
+    }
 
     val renderFit = e["render-fit"]
     var fit by remember { mutableStateOf(renderFit != "unscaled") }
@@ -317,6 +406,9 @@ fun MirrorWindow(
         actionsEnabled = status == SessionStatus.Running && "no-control" !in e,
         audioNote = if (audioDisabled) "No audio from device" else null,
         captureHint = if (captured && windowFocused) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
+        screenshotEnabled = frame.value != null,
+        recordEnabled = recording != null || status == SessionStatus.Running,
+        recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
     )
 
     Window(
@@ -425,24 +517,33 @@ fun MirrorWindow(
         }
 
         ScrcpyViewerTheme(themeMode) {
-            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                MirrorContent(
-                    state = state,
-                    frame = frame,
-                    latestFrame = { session.frames.value },
-                    onFitChange = { fit = it },
-                    onAction = { send(it.messages()) },
-                    onReconnect = { controller.reconnect(serial) },
-                    onPointer = {
-                        when {
-                            "no-control" in e -> Unit
-                            capture != null -> capture.pointer(it, awtWindow, viewSize, density.density)
-                            else -> send(mapper.pointer(it))
-                        }
-                    },
-                    onViewSize = { viewSize = it },
-                    onStageSize = { stage = it },
-                )
+            Box(Modifier.fillMaxSize()) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    MirrorContent(
+                        state = state,
+                        frame = frame,
+                        latestFrame = { session.frames.value },
+                        onFitChange = { fit = it },
+                        onAction = { action ->
+                            when (action) {
+                                MirrorAction.Screenshot -> takeScreenshot()
+                                MirrorAction.Record -> toggleRecording()
+                                else -> send(action.messages())
+                            }
+                        },
+                        onReconnect = { controller.reconnect(serial) },
+                        onPointer = {
+                            when {
+                                "no-control" in e -> Unit
+                                capture != null -> capture.pointer(it, awtWindow, viewSize, density.density)
+                                else -> send(mapper.pointer(it))
+                            }
+                        },
+                        onViewSize = { viewSize = it },
+                        onStageSize = { stage = it },
+                    )
+                }
+                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 80.dp, bottom = 44.dp))
             }
         }
     }
@@ -498,7 +599,7 @@ fun MirrorContent(
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
             }
-            SideToolbar(state.actionsEnabled, onAction)
+            SideToolbar(state, onAction)
         }
         HorizontalDivider(color = colors.outlineVariant)
         StatusLine(state)
@@ -641,7 +742,7 @@ private val toolbarIcons: Map<MirrorAction, ImageVector> = mapOf(
 )
 
 @Composable
-private fun SideToolbar(enabled: Boolean, onAction: (MirrorAction) -> Unit) {
+private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(
         Modifier.width(64.dp).fillMaxHeight().background(colors.surfaceContainer).padding(vertical = 12.dp),
@@ -656,9 +757,17 @@ private fun SideToolbar(enabled: Boolean, onAction: (MirrorAction) -> Unit) {
         groups.forEachIndexed { i, group ->
             if (i > 0) HorizontalDivider(Modifier.width(28.dp).padding(vertical = 4.dp), color = colors.outlineVariant)
             group.forEach { action ->
-                // Screenshot and Record arrive with Task 14.
-                val available = action != MirrorAction.Screenshot && action != MirrorAction.Record
-                ToolbarButton(action, enabled && available) { onAction(action) }
+                val recording = action == MirrorAction.Record && state.recordingLabel != null
+                val enabled = when (action) {
+                    MirrorAction.Screenshot -> state.screenshotEnabled
+                    MirrorAction.Record -> state.recordEnabled
+                    else -> state.actionsEnabled
+                }
+                ToolbarButton(
+                    action, enabled,
+                    label = if (recording) "Stop recording" else action.label,
+                    tint = if (recording) colors.error else null,
+                ) { onAction(action) }
             }
         }
     }
@@ -666,12 +775,12 @@ private fun SideToolbar(enabled: Boolean, onAction: (MirrorAction) -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ToolbarButton(action: MirrorAction, enabled: Boolean, onClick: () -> Unit) {
+private fun ToolbarButton(action: MirrorAction, enabled: Boolean, label: String, tint: Color?, onClick: () -> Unit) {
     TooltipArea(
         tooltip = {
             Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.inverseSurface) {
                 Text(
-                    action.label,
+                    label,
                     Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.inverseOnSurface,
@@ -680,7 +789,11 @@ private fun ToolbarButton(action: MirrorAction, enabled: Boolean, onClick: () ->
         },
     ) {
         IconButton(onClick = onClick, enabled = enabled) {
-            Icon(toolbarIcons.getValue(action), contentDescription = action.label)
+            Icon(
+                toolbarIcons.getValue(action),
+                contentDescription = label,
+                tint = if (enabled && tint != null) tint else LocalContentColor.current,
+            )
         }
     }
 }
@@ -694,6 +807,7 @@ private fun StatusLine(state: MirrorUiState) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val style = MaterialTheme.typography.labelMedium
+        state.recordingLabel?.let { Text(it, style = style, color = colors.error, fontWeight = FontWeight.Medium, maxLines = 1) }
         val fs = state.frameSize
         val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (state.maxSize?.let { " shown at $it max" } ?: "")
         Text(size, style = style, color = colors.onSurfaceVariant)

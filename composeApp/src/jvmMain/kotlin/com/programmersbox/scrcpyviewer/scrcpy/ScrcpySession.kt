@@ -1,6 +1,8 @@
 package com.programmersbox.scrcpyviewer.scrcpy
 
 import androidx.compose.ui.unit.IntSize
+import com.programmersbox.scrcpyviewer.media.RecordResult
+import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import kotlinx.coroutines.CancellationException
@@ -17,21 +19,28 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.Socket
+import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -52,6 +61,9 @@ interface AudioSink {
 
 enum class SessionStatus { Connecting, Running, Disconnected, Failed }
 
+/** The recording in progress: its file, and when it started ([System.nanoTime]). */
+data class RecordingInfo(val file: Path, val startedNanos: Long)
+
 /**
  * One mirroring session with one device. It starts connecting on construction.
  *
@@ -65,6 +77,10 @@ enum class SessionStatus { Connecting, Running, Disconnected, Failed }
  * the session down once: readers stop, [ServerConnection.cleanup] runs, sinks are closed. A launch failure sets
  * [SessionStatus.Failed]. Nothing thrown inside escapes to [scope]: the session runs in its own [SupervisorJob]
  * (a child of [scope]'s job) with a [CoroutineExceptionHandler].
+ *
+ * Recording ([startRecording]) attaches a [Recorder] to both streams; `record` in [values] starts one when the
+ * session starts, and `time-limit` stops each recording after that many seconds. How each one ends is sent to
+ * [recordingResults]. Teardown waits for the recorder to write the trailer.
  */
 class ScrcpySession(
     val serial: String,
@@ -129,6 +145,20 @@ class ScrcpySession(
     private var audioCodec: Int? = null
     private var audioConfig: MediaPacket? = null
 
+    private val recordLock = Any()
+    /** The recording [recording] describes; guarded by [recordLock], which is never held while calling a sink. */
+    private var activeRecording: SessionRecording? = null
+    /** Started recordings whose recorder has not ended yet (teardown waits for them). */
+    private val unfinishedRecordings = CopyOnWriteArrayList<SessionRecording>()
+    @Volatile private var videoAbsent = false
+    @Volatile private var audioAbsent = false
+    private val _recording = MutableStateFlow<RecordingInfo?>(null)
+    /** The recording in progress, or null. */
+    val recording: StateFlow<RecordingInfo?> = _recording.asStateFlow()
+    private val recordingResultChannel = Channel<RecordResult>(Channel.UNLIMITED)
+    /** How each recording ended (saved, or the error), for one collector. */
+    val recordingResults: Flow<RecordResult> = recordingResultChannel.receiveAsFlow()
+
     private val tornDown = AtomicBoolean(false)
     private val teardownDone = CompletableDeferred<Unit>()
     @Volatile private var connection: ServerConnection? = null
@@ -192,11 +222,188 @@ class ScrcpySession(
         audioSinks -= sink
     }
 
-    /** Filled in by Task 14 (Recorder). */
-    fun startRecording(file: Path): Unit = throw UnsupportedOperationException("Recording is not implemented yet")
+    /**
+     * Starts recording both streams to [file] in [format] (default: the `record-format` option, else the file
+     * extension), creating the parent directory. Does file I/O: call it off the UI thread. Throws when a recording is
+     * already running, the session is closed, the format is unknown, or the directory cannot be written; later
+     * failures (an unsupported stream for the container, a write error) arrive in [recordingResults].
+     *
+     * Started mid-stream, it asks the device for a new key frame (`ResetVideo`) when control is enabled.
+     */
+    fun startRecording(file: Path, format: String? = null) {
+        val fmt = format ?: Recorder.formatFor(file, values.entries["record-format"])
+            ?: throw IllegalArgumentException("No format specified for \"$file\" (try with --record-format=mkv)")
+        val orientation = recordOrientation()
+        file.toAbsolutePath().parent?.let { dir ->
+            Files.createDirectories(dir)
+            if (!Files.isWritable(dir)) throw IOException("Cannot write to $dir")
+        }
+        val rec = synchronized(recordLock) {
+            check(!tornDown.get()) { "The session is closed" }
+            check(activeRecording == null) { "Already recording to ${activeRecording?.file}" }
+            SessionRecording(file, fmt, orientation).also {
+                activeRecording = it
+                unfinishedRecordings += it
+                _recording.value = RecordingInfo(file, System.nanoTime())
+            }
+        }
+        val midStream = synchronized(videoLock) { videoConfig != null }
+        // Outside recordLock: the sinks take their own locks.
+        addVideoSink(rec.videoSink)
+        addAudioSink(rec.audioSink)
+        if (videoAbsent) rec.videoAbsent()
+        if (audioAbsent) rec.audioAbsent()
+        values.entries["time-limit"]?.toLongOrNull()?.takeIf { it > 0 }?.let { seconds ->
+            rec.timeLimitJob = sessionScope.launch {
+                delay(seconds * 1000)
+                stopRecording(rec)
+            }
+        }
+        if (midStream) send(ControlMessage.ResetVideo)
+    }
 
-    /** Filled in by Task 14 (Recorder). */
-    fun stopRecording(): Unit = throw UnsupportedOperationException("Recording is not implemented yet")
+    /** Stops the recording in progress, if any; the recorder finishes the file in the background. */
+    fun stopRecording() {
+        synchronized(recordLock) { activeRecording }?.let(::stopRecording)
+    }
+
+    private fun stopRecording(rec: SessionRecording) {
+        synchronized(recordLock) {
+            if (activeRecording !== rec) return
+            activeRecording = null
+            _recording.value = null
+        }
+        removeVideoSink(rec.videoSink)
+        removeAudioSink(rec.audioSink)
+        rec.stop()
+    }
+
+    /** From the recorder thread or a sink call: never under [recordLock]. */
+    private fun recordingEnded(rec: SessionRecording, result: RecordResult) {
+        synchronized(recordLock) {
+            if (activeRecording === rec) {
+                activeRecording = null
+                _recording.value = null
+            }
+        }
+        unfinishedRecordings -= rec
+        rec.timeLimitJob?.cancel()
+        removeVideoSink(rec.videoSink)
+        removeAudioSink(rec.audioSink)
+        recordingResultChannel.trySend(result)
+    }
+
+    /** `record-orientation`, else `orientation` (v5.0 `--orientation` sets both); recording rejects flips. */
+    private fun recordOrientation(): Int {
+        val value = values.entries["record-orientation"] ?: values.entries["orientation"] ?: return 0
+        return value.toIntOrNull()?.takeIf { it in listOf(0, 90, 180, 270) }
+            ?: throw IllegalArgumentException("Record orientation only supports rotation, not flipping: $value")
+    }
+
+    private fun markVideoAbsent() {
+        videoAbsent = true
+        synchronized(recordLock) { activeRecording }?.videoAbsent()
+    }
+
+    private fun markAudioAbsent() {
+        audioAbsent = true
+        synchronized(recordLock) { activeRecording }?.audioAbsent()
+    }
+
+    /**
+     * Feeds one recording: the [Recorder] is created once both streams are known (meta and codec id, or absent);
+     * packets arriving before that wait here.
+     */
+    private inner class SessionRecording(val file: Path, private val format: String, private val orientation: Int) {
+        private val lock = Any()
+        private var meta: VideoCodecMeta? = null
+        private var videoKnown = false
+        private var codec: Int? = null
+        private var audioKnown = false
+        private val pending = ArrayList<Pair<Boolean, MediaPacket>>()
+        private var recorder: Recorder? = null
+        private var stopped = false
+        @Volatile var timeLimitJob: Job? = null
+
+        val videoSink = object : VideoSink {
+            override fun onMeta(meta: VideoCodecMeta) = synchronized(lock) {
+                this@SessionRecording.meta = meta
+                videoKnown = true
+                tryStart()
+            }
+
+            // v5.0 recorder.c has no push_session: a resized stream keeps its initial size in the file.
+            override fun onSession(width: Int, height: Int) = Unit
+            override fun onPacket(p: MediaPacket) = packet(video = true, p)
+            override fun close() = stop()
+        }
+
+        val audioSink = object : AudioSink {
+            override fun onCodec(codecId: Int) = synchronized(lock) {
+                codec = codecId
+                audioKnown = true
+                tryStart()
+            }
+
+            override fun onPacket(p: MediaPacket) = packet(video = false, p)
+            override fun close() = stop()
+        }
+
+        fun videoAbsent() = synchronized(lock) {
+            if (!videoKnown) {
+                videoKnown = true
+                tryStart()
+            }
+        }
+
+        fun audioAbsent() = synchronized(lock) {
+            if (!audioKnown) {
+                audioKnown = true
+                tryStart()
+            }
+        }
+
+        private fun packet(video: Boolean, p: MediaPacket): Unit = synchronized(lock) {
+            if (stopped) return
+            val r = recorder
+            when {
+                r == null -> pending += video to p
+                video -> r.onVideo(p)
+                else -> r.onAudio(p)
+            }
+        }
+
+        /** Caller holds [lock]. */
+        private fun tryStart() {
+            if (recorder != null || stopped || !videoKnown || !audioKnown) return
+            val r = try {
+                Recorder(file, format, meta, codec, orientation, onEnded = { recordingEnded(this, it) })
+            } catch (e: IllegalArgumentException) {
+                stopped = true
+                pending.clear()
+                recordingEnded(this, RecordResult.Failed(file, e.message ?: e.toString()))
+                return
+            }
+            recorder = r
+            for ((video, p) in pending) if (video) r.onVideo(p) else r.onAudio(p)
+            pending.clear()
+        }
+
+        /** Ends the recording (EOS also stops the recorder in v5.0); queued packets are still written. */
+        fun stop() {
+            val notStarted = synchronized(lock) {
+                if (stopped) return
+                stopped = true
+                pending.clear()
+                recorder?.stop()
+                recorder == null
+            }
+            if (notStarted) recordingEnded(this, RecordResult.Failed(file, "Recording stopped before headers were processed"))
+        }
+
+        /** Waits up to [millis] for the recorder to close the file. */
+        fun join(millis: Long): Boolean = synchronized(lock) { recorder }?.join(millis) ?: true
+    }
 
     /** Stops the session and waits until teardown has finished. Safe to call more than once and from any state. */
     suspend fun close() {
@@ -209,6 +416,7 @@ class ScrcpySession(
     }
 
     private suspend fun connect() {
+        values.entries["record"]?.takeIf { it.isNotBlank() }?.let(::startInitialRecording)
         val conn = try {
             launcher.start(serial, values)
         } catch (e: CancellationException) {
@@ -224,6 +432,8 @@ class ScrcpySession(
             return
         }
         _deviceName.value = conn.deviceMeta.name
+        if (conn.video == null) markVideoAbsent()
+        if (conn.audio == null) markAudioAbsent()
         conn.video?.let { s -> launchStream("video") { readVideo(s) } }
         // Returns without disconnecting when the device disabled audio (scrcpy keeps mirroring video).
         conn.audio?.let { s -> launchStream("audio", disconnectOnReturn = false) { readAudio(s) } }
@@ -233,6 +443,22 @@ class ScrcpySession(
         }
         _status.update { if (it == SessionStatus.Connecting) SessionStatus.Running else it }
         if ("turn-screen-off" in values.entries) send(ControlMessage.SetDisplayPower(false))
+    }
+
+    /** `record` option: a failure is reported in [recordingResults]; mirroring goes on. */
+    private fun startInitialRecording(path: String) {
+        val file = try {
+            Paths.get(path)
+        } catch (e: InvalidPathException) {
+            recordingResultChannel.trySend(RecordResult.Failed(Paths.get(""), "Invalid record path: $path"))
+            return
+        }
+        try {
+            startRecording(file)
+        } catch (e: Exception) {
+            log.log(System.Logger.Level.WARNING, "Could not start recording to $file", e)
+            recordingResultChannel.trySend(RecordResult.Failed(file, e.message ?: e.toString()))
+        }
     }
 
     /** Runs [block] under [streamsJob]; its end (or failure) disconnects the session. */
@@ -290,6 +516,7 @@ class ScrcpySession(
             }
             log.log(System.Logger.Level.WARNING, "Audio $what ($serial), mirroring video only")
             _audioDisabledByDevice.value = true
+            markAudioAbsent()
             return
         }
         createSink("audio") { audioFactory(codec, this) }?.let { audioSinks += it }
@@ -390,6 +617,17 @@ class ScrcpySession(
                 audioSinks.forEach { runCatching { it.close() } }
                 audioSinks.clear()
             }
+            synchronized(recordLock) {
+                activeRecording = null
+                _recording.value = null
+            }
+            // The sink close() calls above stopped them; wait for the trailers.
+            for (rec in unfinishedRecordings) {
+                rec.stop()
+                if (!runInterruptible(Dispatchers.IO) { rec.join(RECORDER_JOIN_MS) }) {
+                    log.log(System.Logger.Level.WARNING, "Recorder of $serial still writing ${rec.file}")
+                }
+            }
         } finally {
             cancelGuard.cancel()
             teardownDone.complete(Unit)
@@ -410,6 +648,7 @@ class ScrcpySession(
     private companion object {
         const val CONTROL_QUEUE_CAPACITY = 1024
         const val STREAM_BUFFER = 1 shl 16
+        const val RECORDER_JOIN_MS = 10_000L
         val log: System.Logger = System.getLogger("scrcpyviewer.ScrcpySession")
     }
 }
