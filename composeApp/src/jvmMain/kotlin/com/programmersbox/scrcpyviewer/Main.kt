@@ -1,5 +1,27 @@
 package com.programmersbox.scrcpyviewer
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.rememberWindowState
+import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
+import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import javax.swing.SwingUtilities
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -14,8 +36,6 @@ import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorController
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorWindow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import com.programmersbox.scrcpyviewer.presets.PresetStore
@@ -104,19 +124,49 @@ fun main() {
     application {
         val settings by graph.settings.settings.collectAsState()
         val mirrors by graph.mirrorController.open.collectAsState()
+        val shutdown = remember { AppShutdown(graph.mirrorController, exit = ::exitApplication) }
+        val shutdownState by shutdown.state.collectAsState()
+        DisposableEffect(Unit) {
+            shutdown.installQuitHandler { SwingUtilities.invokeLater(shutdown::request) }
+            onDispose { }
+        }
+        LaunchedEffect(shutdownState) { shutdown.run() }
+        val shuttingDown = shutdownState as? AppShutdown.State.ShuttingDown
         Window(
-            onCloseRequest = {
-                // Stop every server (and remove its tunnel) before leaving.
-                runBlocking { withTimeoutOrNull(5_000) { graph.mirrorController.closeAll() } }
-                exitApplication()
-            },
+            onCloseRequest = shutdown::request,
             title = "Scrcpy Viewer",
+            visible = shuttingDown == null,
         ) {
             App(graph)
         }
         for ((serial, session) in mirrors) {
             key(serial) {
                 MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.captureDir)
+            }
+        }
+        if (shuttingDown?.finishingRecording == true) FinishingRecordingWindow(settings.themeMode)
+    }
+}
+
+/** Shown while quitting waits for recorders to write their trailers. It cannot be closed. */
+@Composable
+private fun FinishingRecordingWindow(themeMode: ThemeMode) {
+    Window(
+        onCloseRequest = {},
+        title = "Scrcpy Viewer",
+        state = rememberWindowState(size = DpSize(340.dp, 120.dp), position = WindowPosition(Alignment.Center)),
+        resizable = false,
+    ) {
+        ScrcpyViewerTheme(themeMode) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                Row(
+                    Modifier.fillMaxSize().padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                    Text("Finishing recording…", style = MaterialTheme.typography.bodyLarge)
+                }
             }
         }
     }
