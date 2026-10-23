@@ -25,10 +25,11 @@ import kotlin.concurrent.withLock
 
 /** How a recording ended. */
 sealed interface RecordResult {
-    val file: Path
+    /** The target file; null when the requested path itself was invalid. */
+    val file: Path?
 
     data class Saved(override val file: Path) : RecordResult
-    data class Failed(override val file: Path, val message: String) : RecordResult
+    data class Failed(override val file: Path?, val message: String) : RecordResult
 }
 
 /**
@@ -51,8 +52,8 @@ sealed interface RecordResult {
  * Unlike v5.0, which always starts with the session, a recorder may start mid-stream: video packets before the first
  * key frame are dropped, and audio packets too, so both streams start together.
  *
- * [onEnded] is called on the recorder thread once the file is closed. A file whose header was never written is
- * deleted. [stop] asks the thread to finish (queued packets are still written); [close] also waits for it.
+ * [onEnded] is called on the recorder thread once the file is closed. A file this recorder opened but whose header
+ * was never written is deleted (never a file or directory it could not open). [stop] asks the thread to finish (queued packets are still written); [close] also waits for it.
  */
 class Recorder(
     private val file: Path,
@@ -80,6 +81,9 @@ class Recorder(
     /** Set by the recorder thread once the header is written (tests). */
     @Volatile internal var headerWritten = false
         private set
+
+    /** Set once avio_open created/truncated [file]: only then may a header-less file be deleted. */
+    private var opened = false
 
     @Volatile var result: RecordResult? = null
         private set
@@ -150,7 +154,7 @@ class Recorder(
             if (pb != null && !pb.isNull) avformat.avio_closep(pb)
             if (ctx != null && !ctx.isNull) avformat.avformat_free_context(ctx)
         }
-        if (!headerWritten) runCatching { Files.deleteIfExists(file) }
+        if (opened && !headerWritten) runCatching { Files.deleteIfExists(file) }
         val r = if (error == null) RecordResult.Saved(file) else RecordResult.Failed(file, error)
         if (error == null) log.log(System.Logger.Level.INFO, "Recording complete to $format file: $file")
         else log.log(System.Logger.Level.WARNING, "Recording failed to $file: $error")
@@ -171,6 +175,7 @@ class Recorder(
         }
         val r = avformat.avio_open(pb, "file:$file", avformat.AVIO_FLAG_WRITE)
         if (r < 0) return "Failed to open output file: $file (${errorString(r)})"
+        opened = true
         ctx.pb(pb)
         val metadata = AVDictionary(null)
         avutil.av_dict_set(metadata, "comment", "Recorded by Scrcpy Viewer (scrcpy 5.0)", 0)
@@ -281,7 +286,7 @@ class Recorder(
                         else -> continue // both video and audio packets are needed to initialize the origin
                     }
                 }
-                val origin = ptsOrigin!!
+                val origin: Long = ptsOrigin
 
                 videoPkt?.let { v ->
                     val pts = v.ptsUs - origin

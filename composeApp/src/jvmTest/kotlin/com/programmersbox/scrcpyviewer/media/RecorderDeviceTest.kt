@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.Assume.assumeTrue
 
 /**
  * Real-device recording and screenshot check; excluded from the default `jvmTest` run (see `MirrorDeviceTest`).
@@ -40,7 +41,8 @@ class RecorderDeviceTest {
     private val adbPath: Path = System.getenv("PATH").split(java.io.File.pathSeparator)
         .map { Paths.get(it, "adb") }.first { Files.isExecutable(it) }
     private val launcher = ServerLauncher(AdbClient(adbPath = { adbPath }), BundledTools(dataDir = Files.createTempDirectory("recorder-device-test")))
-    private val serial = System.getProperty("scrcpyviewer.deviceSerials")?.split(',')?.first() ?: "MBX6P240401889"
+    /** `-PdeviceSerials=<serial>`; the test is skipped without it. */
+    private val serial: String? = System.getProperty("scrcpyviewer.deviceSerials")?.split(',')?.first()?.takeIf { it.isNotBlank() }
     private val out: Path = Files.createDirectories(Paths.get("build", "device-test-output").toAbsolutePath())
 
     @AfterTest
@@ -50,6 +52,8 @@ class RecorderDeviceTest {
 
     @Test
     fun `records 10 s with audio and takes a screenshot`() = runBlocking {
+        assumeTrue("no -PdeviceSerials given", serial != null)
+        val serial = serial!!
         val file = out.resolve("$serial-record.mp4")
         Files.deleteIfExists(file)
         val session = ScrcpySession(

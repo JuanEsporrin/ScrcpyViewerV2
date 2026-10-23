@@ -23,7 +23,8 @@ object Screenshot {
     fun copy(frame: VideoFrame): ImageBitmap? = frame.use { src ->
         val pixels = src.readPixels() ?: return@use null
         val copy = Bitmap()
-        if (!copy.allocPixels(src.imageInfo) || !copy.installPixels(src.imageInfo, pixels, src.rowBytes)) {
+        // installPixels allocates the copy's own pixel memory.
+        if (!copy.installPixels(src.imageInfo, pixels, src.rowBytes)) {
             copy.close()
             return@use null
         }

@@ -60,38 +60,7 @@ class RecorderTest {
         dir.deleteRecursively()
     }
 
-    // ---- Samples (Task 12's sample.h264, the Ogg Opus sample of Task 13) ----
-
-    private class H264Sample(val config: ByteArray, val frames: List<ByteArray>)
-
-    private fun nalUnits(data: ByteArray): List<ByteArray> {
-        val starts = ArrayList<Int>()
-        var i = 0
-        while (i + 3 <= data.size) {
-            if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()) {
-                starts += if (i > 0 && data[i - 1] == 0.toByte()) i - 1 else i
-                i += 3
-            } else i++
-        }
-        return starts.mapIndexed { n, s -> data.copyOfRange(s, starts.getOrElse(n + 1) { data.size }) }
-    }
-
-    private fun nalType(nal: ByteArray): Int = (if (nal[2] == 1.toByte()) nal[3] else nal[4]).toInt() and 0x1f
-
-    private fun h264(): H264Sample {
-        val nals = nalUnits(checkNotNull(javaClass.getResourceAsStream("/sample.h264")).readBytes())
-        val config = nals.filter { nalType(it) == 7 || nalType(it) == 8 }
-        val frames = ArrayList<ByteArray>()
-        var pending = ByteArray(0)
-        for (nal in nals - config.toSet()) {
-            pending += nal
-            if (nalType(nal) in 1..5) {
-                frames += pending
-                pending = ByteArray(0)
-            }
-        }
-        return H264Sample(config.reduce { a, b -> a + b }, frames)
-    }
+    // ---- Samples (sample.h264 from SampleStreams.kt, the Ogg Opus sample of Task 13) ----
 
     private val meta = VideoCodecMeta(StreamProtocol.CODEC_H264, 320, 240)
 
@@ -165,7 +134,7 @@ class RecorderTest {
 
     @Test
     fun `records sample h264 to mp4`() {
-        val s = h264()
+        val s = loadH264Sample()
         assertEquals(5, s.frames.size)
         val file = dir.resolve("out.mp4")
         val result = record(file, "mp4", meta, null) { feedVideo(s) }
@@ -185,7 +154,7 @@ class RecorderTest {
 
     @Test
     fun `waits for config before writing`() {
-        val s = h264()
+        val s = loadH264Sample()
         val opus = opusPackets()
         val file = dir.resolve("av.mkv")
         val result = record(file, "mkv", meta, StreamProtocol.CODEC_OPUS) {
@@ -208,13 +177,36 @@ class RecorderTest {
 
     @Test
     fun `fails when the first packet is not a config packet`() {
-        val s = h264()
+        val s = loadH264Sample()
         val file = dir.resolve("bad.mp4")
         val result = record(file, "mp4", meta, null) {
             onVideo(MediaPacket(0, isConfig = false, isKeyFrame = true, data = s.config + s.frames[0]))
         }
         assertIs<RecordResult.Failed>(result)
         assertFalse(Files.exists(file), "a file without a header is removed")
+    }
+
+    @Test
+    fun `a failed open keeps an existing read-only file`() {
+        val file = dir.resolve("locked.mp4")
+        Files.write(file, "keep".toByteArray())
+        check(file.toFile().setWritable(false))
+        try {
+            val result = record(file, "mp4", meta, null) { feedVideo(loadH264Sample()) }
+            assertIs<RecordResult.Failed>(result)
+            assertTrue("Failed to open output file" in result.message, result.message)
+            assertEquals("keep", Files.readString(file), "a file the recorder could not open is left alone")
+        } finally {
+            file.toFile().setWritable(true)
+        }
+    }
+
+    @Test
+    fun `a failed open keeps an existing empty directory`() {
+        val target = Files.createDirectory(dir.resolve("taken.mp4"))
+        val result = record(target, "mp4", meta, null) { feedVideo(loadH264Sample()) }
+        assertIs<RecordResult.Failed>(result)
+        assertTrue(Files.isDirectory(target), "the directory survives")
     }
 
     @Test
@@ -228,7 +220,7 @@ class RecorderTest {
 
         val file = dir.resolve("clip.mkv")
         val format = assertNotNull(Recorder.formatFor(file, null))
-        val result = record(file, format, meta, null) { feedVideo(h264()) }
+        val result = record(file, format, meta, null) { feedVideo(loadH264Sample()) }
         assertEquals(RecordResult.Saved(file), result)
         val info = probe(file)
         assertTrue("matroska" in info.format, info.format)
@@ -238,7 +230,7 @@ class RecorderTest {
     @Test
     fun `record orientation sets the display matrix`() {
         val file = dir.resolve("rotated.mp4")
-        record(file, "mp4", meta, null, orientation = 90) { feedVideo(h264()) }
+        record(file, "mp4", meta, null, orientation = 90) { feedVideo(loadH264Sample()) }
         val rotation = assertNotNull(probe(file).streams.single().rotation)
         // v5.0 passes the clockwise angle to av_display_rotation_set (clockwise); the getter reports it
         // counterclockwise, as ffprobe does ("rotation of -90.00 degrees").
@@ -261,7 +253,7 @@ class RecorderTest {
 
     @Test
     fun `drops video until the first key frame when started mid-stream`() {
-        val s = h264()
+        val s = loadH264Sample()
         val file = dir.resolve("mid.mp4")
         val result = record(file, "mp4", meta, null) {
             onVideo(MediaPacket(0, isConfig = true, isKeyFrame = false, data = s.config))
@@ -304,10 +296,10 @@ class RecorderTest {
         assertEquals(SessionStatus.Running, status.value, "error: ${error.value}")
     }
 
-    private fun videoOut(launcher: LocalPairLauncher) = runBlocking {
+    private fun videoOut(launcher: LocalPairLauncher, codec: Int = StreamProtocol.CODEC_H264) = runBlocking {
         val out = DataOutputStream(launcher.device.await().video!!.getOutputStream())
         // Session header: bit 63 set, then width and height.
-        out.writeInt(StreamProtocol.CODEC_H264)
+        out.writeInt(codec)
         out.writeInt(0x80000000.toInt()); out.writeInt(320); out.writeInt(240); out.flush()
         FakeVideo(out)
     }
@@ -319,7 +311,7 @@ class RecorderTest {
         val s = session(launcher, mapOf("record" to file.toString()))
         s.awaitRunning()
         assertEquals(file, s.recording.value?.file, "recording from the start")
-        videoOut(launcher).sendFrames(h264(), startUs = 5_000_000)
+        videoOut(launcher).sendFrames(loadH264Sample(), startUs = 5_000_000)
         delay(300)
         withTimeout(15_000) { s.close() } // teardown waits for the trailer
         assertNull(s.recording.value)
@@ -335,7 +327,7 @@ class RecorderTest {
         val s = session(launcher, emptyMap())
         s.awaitRunning()
         val video = videoOut(launcher)
-        val sample = h264()
+        val sample = loadH264Sample()
         video.sendFrames(sample, startUs = 0)
         withTimeout(5_000) { while (s.frameSize.value == null) delay(10) }
         delay(200) // the config packet has been read
@@ -364,7 +356,7 @@ class RecorderTest {
         val launcher = LocalPairLauncher(video = true, audio = false, control = false)
         val s = session(launcher, mapOf("record" to file.toString(), "time-limit" to "1"))
         s.awaitRunning()
-        videoOut(launcher).sendFrames(h264(), startUs = 0)
+        videoOut(launcher).sendFrames(loadH264Sample(), startUs = 0)
         assertEquals(RecordResult.Saved(file), withTimeout(5_000) { s.recordingResults.first() })
         assertNull(s.recording.value)
         assertEquals(SessionStatus.Running, s.status.value, "only the recording stops")
@@ -380,6 +372,48 @@ class RecorderTest {
         assertIs<RecordResult.Failed>(result)
         s.awaitRunning() // mirroring goes on
         assertNull(s.recording.value)
+        s.close()
+    }
+
+    private suspend fun readControl(launcher: LocalPairLauncher, size: Int): ByteArray {
+        val got = ByteArray(size)
+        withContext(Dispatchers.IO) { DataInputStream(launcher.device.await().control!!.getInputStream()).readFully(got) }
+        return got
+    }
+
+    @Test
+    fun `VP8 mid-session start asks for a key frame too`() = runBlocking {
+        val launcher = LocalPairLauncher(video = true, audio = false, control = true)
+        val s = session(launcher, emptyMap())
+        s.awaitRunning()
+        // VP8 has no config packet: a media packet alone means the stream is running.
+        videoOut(launcher, StreamProtocol.CODEC_VP8).packet(StreamProtocol.FLAG_KEY_FRAME, byteArrayOf(1, 2, 3))
+        withTimeout(5_000) { while (s.frameSize.value == null) delay(10) }
+        delay(200)
+        s.startRecording(dir.resolve("vp8.mkv"))
+        val reset = ControlMessage.ResetVideo.serialize()
+        assertContentEquals(reset, readControl(launcher, reset.size))
+        s.stopRecording()
+        s.close()
+    }
+
+    @Test
+    fun `a recording that fails at once sends no ResetVideo`() = runBlocking {
+        val launcher = LocalPairLauncher(video = true, audio = false, control = true)
+        val s = session(launcher, emptyMap())
+        s.awaitRunning()
+        videoOut(launcher).sendFrames(loadH264Sample(), startUs = 0)
+        withTimeout(5_000) { while (s.frameSize.value == null) delay(10) }
+        delay(200)
+        // Video into an audio-only container: the recorder rejects it as soon as the meta is replayed.
+        s.startRecording(dir.resolve("bad.m4a"))
+        val result = assertIs<RecordResult.Failed>(withTimeout(5_000) { s.recordingResults.first() })
+        assertEquals("Audio container does not support video stream", result.message)
+        assertNull(s.recording.value)
+        // The next control bytes are this message, not a ResetVideo.
+        s.send(ControlMessage.RotateDevice)
+        val rotate = ControlMessage.RotateDevice.serialize()
+        assertContentEquals(rotate, readControl(launcher, rotate.size))
         s.close()
     }
 }

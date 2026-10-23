@@ -64,6 +64,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asComposeImageBitmap
+import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -266,6 +267,8 @@ fun MirrorWindow(
         }
     }
     var recordingElapsed by remember { mutableStateOf<String?>(null) }
+    /** A start is in flight (directory creation on the IO dispatcher): the Record button waits for it. */
+    var recordStarting by remember { mutableStateOf(false) }
     LaunchedEffect(recording) {
         val r = recording
         recordingElapsed = null
@@ -291,15 +294,19 @@ fun MirrorWindow(
                 notify("Screenshot saved to $file")
             } catch (e: Exception) {
                 notify("Could not save the screenshot: ${e.message ?: e}")
+            } finally {
+                bitmap.asSkiaBitmap().close() // the copy's native pixels
             }
         }
     }
 
     fun toggleRecording() {
+        if (recordStarting) return
         if (session.recording.value != null) {
             session.stopRecording() // "Recording saved to …" comes from recordingResults
             return
         }
+        recordStarting = true
         uiScope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -308,6 +315,8 @@ fun MirrorWindow(
                 }
             } catch (e: Exception) {
                 notify("Could not start recording: ${e.message ?: e}")
+            } finally {
+                recordStarting = false
             }
         }
     }
@@ -407,7 +416,7 @@ fun MirrorWindow(
         audioNote = if (audioDisabled) "No audio from device" else null,
         captureHint = if (captured && windowFocused) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
         screenshotEnabled = frame.value != null,
-        recordEnabled = recording != null || status == SessionStatus.Running,
+        recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),
         recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
     )
 

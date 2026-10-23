@@ -36,8 +36,7 @@ class ScreenshotSaveTest {
             bytes[i + 3] = 0xff.toByte()
         }
         return Bitmap().apply {
-            allocPixels(info)
-            installPixels(info, bytes, 16)
+            check(installPixels(info, bytes, 16))
             setImmutable()
         }
     }
