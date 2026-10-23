@@ -17,11 +17,10 @@ object AppDataDir {
     }
 
     private fun platformDefault(): Path {
-        val os = System.getProperty("os.name").lowercase()
         val home = Paths.get(System.getProperty("user.home"))
         return when {
-            os.contains("mac") -> home.resolve("Library/Application Support").resolve(DIR_NAME)
-            os.contains("win") -> {
+            Os.isMac -> home.resolve("Library/Application Support").resolve(DIR_NAME)
+            Os.isWindows -> {
                 val appData = System.getenv("APPDATA")?.takeIf { it.isNotBlank() }
                 (appData?.let { Paths.get(it) } ?: home.resolve("AppData/Roaming")).resolve(DIR_NAME)
             }

@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
+import com.programmersbox.scrcpyviewer.Os
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.HorizontalScrollbar
@@ -437,7 +438,7 @@ fun MirrorWindow(
         }
         val awtWindow = window
         DisposableEffect(session) {
-            val paste = if (System.getProperty("os.name").lowercase().contains("mac")) AwtKeyEvent.META_DOWN_MASK else AwtKeyEvent.CTRL_DOWN_MASK
+            val paste = if (Os.isMac) AwtKeyEvent.META_DOWN_MASK else AwtKeyEvent.CTRL_DOWN_MASK
             var pasteDown = false
             val dispatcher = KeyEventDispatcher { ev ->
                 val inWindow = ev.component === awtWindow || SwingUtilities.getWindowAncestor(ev.component) === awtWindow

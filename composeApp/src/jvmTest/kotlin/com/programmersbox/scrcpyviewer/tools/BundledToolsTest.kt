@@ -1,12 +1,13 @@
 package com.programmersbox.scrcpyviewer.tools
 
+import com.programmersbox.scrcpyviewer.Os
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class BundledToolsTest {
-    private val windows = System.getProperty("os.name").lowercase().contains("win")
+    private val windows = Os.isWindows
     private val adbName = if (windows) "adb.exe" else "adb"
 
     private fun fakeResources() = Files.createTempDirectory("res").also {

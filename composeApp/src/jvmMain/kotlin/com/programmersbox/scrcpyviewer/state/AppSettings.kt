@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.state
 
+import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,8 +18,7 @@ data class Settings(
 
 internal fun defaultCaptureDir(): String {
     val home = Paths.get(System.getProperty("user.home"))
-    val mac = System.getProperty("os.name").lowercase().contains("mac")
-    return home.resolve(if (mac) "Movies" else "Videos").resolve("ScrcpyViewer").toString()
+    return home.resolve(if (Os.isMac) "Movies" else "Videos").resolve("ScrcpyViewer").toString()
 }
 
 /** App settings persisted to [file] (`settings.json`); defaults when the file is missing or corrupt. */

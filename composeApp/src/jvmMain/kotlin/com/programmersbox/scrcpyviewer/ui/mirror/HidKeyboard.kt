@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
+import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
 import java.awt.Toolkit
 import java.awt.event.KeyEvent as AwtKeyEvent
@@ -288,4 +289,4 @@ class HidKeyboard(
     }
 }
 
-internal fun isMacOs(): Boolean = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+internal fun isMacOs(): Boolean = Os.isMac

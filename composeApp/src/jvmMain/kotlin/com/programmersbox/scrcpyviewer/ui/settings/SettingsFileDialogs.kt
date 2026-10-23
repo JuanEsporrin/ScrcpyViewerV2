@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.settings
 
+import com.programmersbox.scrcpyviewer.Os
 import java.awt.FileDialog
 import java.awt.Frame
 import java.nio.file.Path
@@ -23,7 +24,7 @@ class AwtSettingsFileDialogs(private val parent: () -> Frame? = { null }) : Sett
     }
 
     override fun chooseFolder(initial: Path?): Path? {
-        if (System.getProperty("os.name").lowercase().contains("mac")) {
+        if (Os.isMac) {
             // AWT's native macOS dialog picks folders when this property is set.
             val key = "apple.awt.fileDialogForDirectories"
             System.setProperty(key, "true")

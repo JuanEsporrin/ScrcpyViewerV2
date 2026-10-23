@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.adb
 
+import com.programmersbox.scrcpyviewer.Os
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -91,7 +92,7 @@ open class AdbClient(
         }
     }
 
-    private fun nullFile() = java.io.File(if (System.getProperty("os.name").lowercase().contains("win")) "NUL" else "/dev/null")
+    private fun nullFile() = java.io.File(if (Os.isWindows) "NUL" else "/dev/null")
 
     /**
      * Cold flow of `host:track-devices-l` payloads. Completes when the server closes the stream and

@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.tools
 
+import com.programmersbox.scrcpyviewer.Os
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -82,15 +83,14 @@ class BundledTools(
             return dirs.distinct()
         }
 
-        fun isWindows() = System.getProperty("os.name").lowercase().contains("win")
+        fun isWindows() = Os.isWindows
 
         fun hostDirName(): String {
-            val os = System.getProperty("os.name").lowercase()
             val arch = System.getProperty("os.arch").lowercase()
             val arm = arch == "aarch64" || arch == "arm64"
             return when {
-                os.contains("mac") -> if (arm) "macos-arm64" else "macos-x64"
-                os.contains("win") -> "windows-x64"
+                Os.isMac -> if (arm) "macos-arm64" else "macos-x64"
+                Os.isWindows -> "windows-x64"
                 else -> "linux-x64"
             }
         }
