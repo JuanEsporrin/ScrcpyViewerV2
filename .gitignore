@@ -1,2 +1,7 @@
 .superpowers/
 .remember/
+build/
+.gradle/
+.idea/
+.kotlin/
+composeApp/bundled/
