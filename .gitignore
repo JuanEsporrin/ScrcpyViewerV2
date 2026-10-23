@@ -5,3 +5,5 @@ build/
 .idea/
 .kotlin/
 composeApp/bundled/
+.hotswan/
+local.properties
