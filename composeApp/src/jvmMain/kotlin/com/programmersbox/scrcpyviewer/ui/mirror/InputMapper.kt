@@ -1,12 +1,14 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.awt.awtEventOrNull
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.unit.IntSize
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
@@ -26,11 +28,17 @@ enum class KeyInjectMode { Mixed, Text, Raw }
  * (the size of the image on screen; it changes on rotation) is letterboxed inside it, or stretched to fill it when
  * [stretch] returns true. Device positions carry that frame size as the screen size.
  *
- * - Left button: `InjectTouch` with the mouse pointer id (-1). A press, hover or scroll on the letterbox bars is
- *   dropped; once a button is held, moves and the release are clamped to the frame so the gesture always ends.
- * - Right button: `BackOrScreenOn` (down and up). Middle button: HOME key down and up.
- * - Wheel: `InjectScroll`; Compose's delta is positive towards the user, SDL's (and Android's) the other way, so
- *   vscroll is `-delta.y` and hscroll `delta.x`.
+ * - Buttons other than the left one go through [bindings] (`--mouse-bind`; the secondary set while Shift is held):
+ *   BACK is `BackOrScreenOn`, HOME and APP_SWITCH are key down/up (only with a keyboard, [keyboardEnabled]), the
+ *   notification panel opens on press (a double click opens the settings panel), `-` drops the click and `+`
+ *   forwards it to the mouse. Bindings apply even when the mouse is disabled ([mouseEnabled] false).
+ * - Forwarded buttons, SDK mouse: `InjectTouch` with the mouse pointer id (-1) and the `AMOTION_EVENT_BUTTON_*` of
+ *   [MouseButton.bit]. A press, hover or scroll on the letterbox bars is dropped; once a button is held, moves and
+ *   the release are clamped to the frame so the gesture always ends.
+ * - Forwarded buttons, UHID mouse ([hidMouse] set, relative mode): HID reports of the buttons state; motion comes
+ *   from [relativeMove] (the window captures the pointer), absolute moves are ignored.
+ * - Wheel: `InjectScroll` (or a HID wheel report); Compose's delta is positive towards the user, SDL's (and
+ *   Android's) the other way, so vscroll is `-delta.y` and hscroll `delta.x`.
  * - Motion without a button: `HOVER_MOVE` unless [hover] is false (`--no-mouse-hover`).
  */
 class InputMapper(
@@ -40,6 +48,10 @@ class InputMapper(
     private val hover: Boolean = true,
     private val keyMode: KeyInjectMode = KeyInjectMode.Mixed,
     private val forwardKeyRepeat: Boolean = true,
+    private val bindings: MouseBindings = MouseBindings.default(uhidMouse = false),
+    private val hidMouse: HidMouse? = null,
+    private val mouseEnabled: Boolean = true,
+    private val keyboardEnabled: Boolean = true,
 ) {
     private var buttons = 0
     private var lastKeyDown = -1
@@ -50,20 +62,32 @@ class InputMapper(
     fun pointer(event: PointerEvent): List<ControlMessage> {
         val change = event.changes.firstOrNull() ?: return emptyList()
         val pos = change.position
+        val shift = event.keyboardModifiers.isShiftPressed
         return when (event.type) {
-            PointerEventType.Press -> event.button?.let { press(pos, it) } ?: emptyList()
-            PointerEventType.Release -> event.button?.let { release(pos, it) } ?: emptyList()
+            PointerEventType.Press -> event.button?.let { press(pos, it, shift, event.awtEventOrNull?.clickCount ?: 1) } ?: emptyList()
+            PointerEventType.Release -> event.button?.let { release(pos, it, shift) } ?: emptyList()
             PointerEventType.Move -> move(pos)
             PointerEventType.Scroll -> scroll(pos, change.scrollDelta)
             else -> emptyList()
         }
     }
 
-    fun press(position: Offset, button: PointerButton): List<ControlMessage> = mouseButton(position, button, down = true)
+    /** [clicks] is the click count (2 for a double click). */
+    fun press(position: Offset, button: PointerButton, shift: Boolean = false, clicks: Int = 1): List<ControlMessage> =
+        mouseButton(position, button, down = true, shift, clicks)
 
-    fun release(position: Offset, button: PointerButton): List<ControlMessage> = mouseButton(position, button, down = false)
+    fun release(position: Offset, button: PointerButton, shift: Boolean = false): List<ControlMessage> =
+        mouseButton(position, button, down = false, shift, clicks = 1)
+
+    /** Relative motion of a captured pointer (UHID mouse only). */
+    fun relativeMove(dx: Int, dy: Int): List<ControlMessage> {
+        val hid = hidMouse ?: return emptyList()
+        if (!mouseEnabled || (dx == 0 && dy == 0)) return emptyList()
+        return listOf(hid.motion(dx, dy, buttons))
+    }
 
     fun move(position: Offset): List<ControlMessage> {
+        if (!mouseEnabled || hidMouse != null) return emptyList()
         if (buttons == 0) {
             if (!hover) return emptyList()
             val p = toDevice(position, clamp = false) ?: return emptyList()
@@ -74,28 +98,47 @@ class InputMapper(
     }
 
     fun scroll(position: Offset, delta: Offset): List<ControlMessage> {
+        if (!mouseEnabled) return emptyList()
+        hidMouse?.let { hid -> return listOfNotNull(hid.scroll(hscroll = delta.x, vscroll = 0f - delta.y)) }
         val p = toDevice(position, clamp = false) ?: return emptyList()
         return listOf(ControlMessage.InjectScroll(p, hscroll = delta.x, vscroll = 0f - delta.y, buttons = buttons))
     }
 
-    private fun mouseButton(position: Offset, button: PointerButton, down: Boolean): List<ControlMessage> {
+    /** `sc_input_manager_process_mouse_button()`. */
+    private fun mouseButton(position: Offset, button: PointerButton, down: Boolean, shift: Boolean, clicks: Int): List<ControlMessage> {
+        val mb = MouseButton.of(button) ?: return emptyList()
+        val wasDown = buttons and mb.bit != 0
+        if (!down) buttons = buttons and mb.bit.inv()
         val action = if (down) KEY_ACTION_DOWN else KEY_ACTION_UP
-        when (button) {
-            PointerButton.Secondary -> return listOf(ControlMessage.BackOrScreenOn(action))
-            PointerButton.Tertiary -> return listOf(ControlMessage.InjectKeycode(action, KEYCODE_HOME, 0, 0))
-            PointerButton.Primary -> Unit
-            else -> return emptyList()
+        when (bindings.binding(mb, shift)) {
+            MouseBinding.Disabled -> return emptyList()
+            MouseBinding.Back -> return if (keyboardEnabled) listOf(ControlMessage.BackOrScreenOn(action)) else emptyList()
+            MouseBinding.Home -> return keyIf(action, KEYCODE_HOME)
+            MouseBinding.AppSwitch -> return keyIf(action, KEYCODE_APP_SWITCH)
+            MouseBinding.ExpandNotificationPanel -> return when {
+                !down -> emptyList()
+                clicks < 2 -> listOf(ControlMessage.ExpandNotificationPanel)
+                else -> listOf(ControlMessage.ExpandSettingsPanel)
+            }
+            MouseBinding.Click -> Unit
+        }
+        if (!mouseEnabled) return emptyList()
+        hidMouse?.let { hid ->
+            if (down) buttons = buttons or mb.bit
+            return listOf(hid.click(buttons))
         }
         if (down) {
             val p = toDevice(position, clamp = false) ?: return emptyList()
-            buttons = buttons or BUTTON_PRIMARY
-            return listOf(touch(ACTION_DOWN, p, pressure = 1f, actionButton = BUTTON_PRIMARY))
+            buttons = buttons or mb.bit
+            return listOf(touch(ACTION_DOWN, p, pressure = 1f, actionButton = mb.bit))
         }
-        if (buttons and BUTTON_PRIMARY == 0) return emptyList() // the press was dropped
-        buttons = buttons and BUTTON_PRIMARY.inv()
+        if (!wasDown) return emptyList() // the press was dropped
         val p = toDevice(position, clamp = true) ?: return emptyList()
-        return listOf(touch(ACTION_UP, p, pressure = 0f, actionButton = BUTTON_PRIMARY))
+        return listOf(touch(ACTION_UP, p, pressure = 0f, actionButton = mb.bit))
     }
+
+    private fun keyIf(action: Int, keycode: Int): List<ControlMessage> =
+        if (keyboardEnabled) listOf(ControlMessage.InjectKeycode(action, keycode, 0, 0)) else emptyList()
 
     private fun touch(action: Int, p: Position, pressure: Float, actionButton: Int) = ControlMessage.InjectTouch(
         action = action,
@@ -237,15 +280,33 @@ class InputMapper(
             return Rect(left, top, left + w, top + h)
         }
 
-        /** `--keyboard`/`--prefer-text`/`--raw-key-events`/`--no-key-repeat`/`--no-mouse-hover` for a session. */
-        fun forOptions(values: OptionValues, frameSize: () -> IntSize?, viewRect: () -> Rect, stretch: () -> Boolean): InputMapper {
+        /**
+         * `--keyboard`/`--mouse`/`--mouse-bind`/`--prefer-text`/`--raw-key-events`/`--no-key-repeat`/`--no-mouse-hover`
+         * for a session. [hidMouse] is the session's UHID mouse when `--mouse=uhid`.
+         */
+        fun forOptions(
+            values: OptionValues,
+            frameSize: () -> IntSize?,
+            viewRect: () -> Rect,
+            stretch: () -> Boolean,
+            hidMouse: HidMouse? = null,
+        ): InputMapper {
             val e = values.entries
             val mode = when {
                 "raw-key-events" in e -> KeyInjectMode.Raw
                 "prefer-text" in e -> KeyInjectMode.Text
                 else -> KeyInjectMode.Mixed
             }
-            return InputMapper(frameSize, viewRect, stretch, hover = "no-mouse-hover" !in e, keyMode = mode, forwardKeyRepeat = "no-key-repeat" !in e)
+            return InputMapper(
+                frameSize, viewRect, stretch,
+                hover = "no-mouse-hover" !in e,
+                keyMode = mode,
+                forwardKeyRepeat = "no-key-repeat" !in e,
+                bindings = MouseBindings.forOptions(values),
+                hidMouse = hidMouse,
+                mouseEnabled = e["mouse"] != "disabled",
+                keyboardEnabled = e["keyboard"] != "disabled",
+            )
         }
 
         // keyboard_sdk.c special_keys (all modes). Right-hand modifiers come from the key location.

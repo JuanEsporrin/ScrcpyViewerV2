@@ -28,8 +28,9 @@ import com.programmersbox.scrcpyviewer.options.OptionType.Text
  *
  * Not listed on purpose:
  * - the hidden options from the global constraints (`--otg`, `-s`, `--list-*`, `--render-driver`, ...);
- * - the short-only aliases `-K`, `-M` and `-G`, which are `--keyboard=uhid`, `--mouse=uhid` and `--gamepad=uhid`
- *   without OTG, and so are already covered by the [Choice] of those options.
+ * - `--gamepad` (and its alias `-G`): the JVM has no gamepad API, so the mirror window could not forward one;
+ * - the short-only aliases `-K` and `-M`, which are `--keyboard=uhid` and `--mouse=uhid` without OTG, and so are
+ *   already covered by the [Choice] of those options.
  */
 object OptionCatalog {
     private val orientations = listOf("0", "90", "180", "270", "flip0", "flip90", "flip180", "flip270")
@@ -162,11 +163,9 @@ object OptionCatalog {
             "How to send keyboard inputs: disabled, sdk (Android API) or uhid (simulated physical HID keyboard)."),
         client("mouse", "Mouse", Control, Choice(listOf("disabled", "sdk", "uhid")),
             "How to send mouse inputs: disabled, sdk (Android API) or uhid (simulated physical HID mouse, captured)."),
-        client("gamepad", "Gamepad", Control, Choice(listOf("disabled", "uhid")),
-            "How to send gamepad inputs: disabled or uhid (simulated physical HID gamepads)."),
         client("mouse-bind", "Mouse bindings", Control,
             Formatted("xxxx or xxxx:xxxx, each x in + - b h s n", "bhsn:++++") { it.matches(MOUSE_BIND) },
-            "Bindings of secondary clicks (right, middle, 4th, 5th): + forward, - ignore, b BACK, h HOME, s APP_SWITCH, n notifications. The second set applies with Shift."),
+            "Bindings of secondary clicks (right, middle, 4th, 5th): + forward, - ignore, b BACK, h HOME, s APP_SWITCH, n notifications. The second set applies with Shift. Default is bhsn:++++ for the SDK mouse and ++++:bhsn for UHID."),
         client("no-mouse-hover", "No mouse hover", Control, Flag,
             "Do not forward mouse hover (motion without clicks) events. SDK mouse only."),
         client("no-key-repeat", "No key repeat", Control, Flag,
@@ -319,6 +318,7 @@ object OptionCatalog {
     fun byFlag(flag: String): OptionSpec? = byFlagIndex[flag]
 }
 
+/** `parse_mouse_bindings()` in cli.c: "xxxx" or "xxxx:xxxx", each x in + - b h s n. */
 private val MOUSE_BIND = Regex("""^[-+bhsn]{4}(:[-+bhsn]{4})?$""")
 private val HEX_COLOR = Regex("""^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$""")
 private val IPV4 = Regex("""^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$""")

@@ -102,4 +102,62 @@ class InputMapperTest {
         val up = mapper.awtKey(AwtKeyEvent.KEY_RELEASED, AwtKeyEvent.VK_BACK_SPACE, '\b', 0)
         assertEquals(listOf<ControlMessage>(ControlMessage.InjectKeycode(1, 67, 0, 0)), up)
     }
+
+    @Test
+    fun `default sdk bindings - right BACK, middle HOME, 4th APP_SWITCH, 5th notifications`() {
+        assertEquals(listOf<ControlMessage>(ControlMessage.InjectKeycode(0, InputMapper.KEYCODE_HOME, 0, 0)), mapper.press(center, PointerButton.Tertiary))
+        assertEquals(listOf<ControlMessage>(ControlMessage.InjectKeycode(1, InputMapper.KEYCODE_HOME, 0, 0)), mapper.release(center, PointerButton.Tertiary))
+        assertEquals(listOf<ControlMessage>(ControlMessage.InjectKeycode(0, InputMapper.KEYCODE_APP_SWITCH, 0, 0)), mapper.press(center, PointerButton.Back))
+        assertEquals(listOf<ControlMessage>(ControlMessage.ExpandNotificationPanel), mapper.press(center, PointerButton.Forward))
+        assertTrue(mapper.release(center, PointerButton.Forward).isEmpty(), "panel is expanded on press only")
+        assertEquals(listOf<ControlMessage>(ControlMessage.ExpandSettingsPanel), mapper.press(center, PointerButton.Forward, clicks = 2))
+    }
+
+    @Test
+    fun `shift selects the secondary bindings, which forward clicks by default`() {
+        val down = mapper.press(center, PointerButton.Secondary, shift = true).single() as ControlMessage.InjectTouch
+        assertEquals(InputMapper.ACTION_DOWN, down.action)
+        assertEquals(2, down.actionButton) // AMOTION_EVENT_BUTTON_SECONDARY
+        assertEquals(2, down.buttons)
+        val move = mapper.move(Offset(260f, 250f)).single() as ControlMessage.InjectTouch
+        assertEquals(InputMapper.ACTION_MOVE, move.action)
+        assertEquals(2, move.buttons)
+        val up = mapper.release(center, PointerButton.Secondary, shift = true).single() as ControlMessage.InjectTouch
+        assertEquals(InputMapper.ACTION_UP, up.action)
+        assertEquals(2, up.actionButton)
+        assertEquals(0, up.buttons)
+        val x2 = mapper.press(center, PointerButton.Forward, shift = true).single() as ControlMessage.InjectTouch
+        assertEquals(16, x2.actionButton) // AMOTION_EVENT_BUTTON_FORWARD
+    }
+
+    @Test
+    fun `custom bindings, ignore and disabled keyboard`() {
+        val m = InputMapper(frameSize = { size }, viewRect = { view }, bindings = MouseBindings("-+bh", "-+bh"), keyboardEnabled = false)
+        assertTrue(m.press(center, PointerButton.Secondary).isEmpty(), "'-' ignores the click")
+        assertEquals(4, (m.press(center, PointerButton.Tertiary).single() as ControlMessage.InjectTouch).actionButton)
+        assertTrue(m.press(center, PointerButton.Back).isEmpty(), "key shortcuts need a keyboard (input_manager.c checks im->kp)")
+        assertTrue(m.press(center, PointerButton.Forward).isEmpty())
+    }
+
+    @Test
+    fun `disabled mouse still runs the bindings but forwards nothing`() {
+        val m = InputMapper(frameSize = { size }, viewRect = { view }, mouseEnabled = false)
+        assertTrue(m.press(center, PointerButton.Primary).isEmpty())
+        assertTrue(m.move(center).isEmpty())
+        assertTrue(m.scroll(center, Offset(0f, 1f)).isEmpty())
+        assertEquals(listOf<ControlMessage>(ControlMessage.BackOrScreenOn(0)), m.press(center, PointerButton.Secondary))
+    }
+
+    @Test
+    fun `uhid mouse sends relative HID reports, bindings first`() {
+        val m = InputMapper(frameSize = { size }, viewRect = { view }, bindings = MouseBindings.default(uhidMouse = true), hidMouse = HidMouse())
+        fun List<ControlMessage>.hid() = (single() as ControlMessage.UhidInput).also { assertEquals(HidMouse.ID, it.id) }.data.map { it.toInt() }
+        assertEquals(listOf(1, 0, 0, 0, 0), m.press(Offset(1f, 1f), PointerButton.Primary).hid(), "no position: bars do not matter")
+        assertEquals(listOf(1, 7, -3, 0, 0), m.relativeMove(7, -3).hid())
+        assertEquals(listOf(3, 0, 0, 0, 0), m.press(center, PointerButton.Secondary).hid(), "++++ forwards the right button")
+        assertTrue(m.move(center).isEmpty(), "absolute moves are ignored in relative mode")
+        assertEquals(listOf(2, 0, 0, 0, 0), m.release(center, PointerButton.Primary).hid())
+        assertEquals(listOf(0, 0, 0, -1, 0), m.scroll(center, Offset(0f, 1f)).hid())
+        assertEquals(listOf<ControlMessage>(ControlMessage.BackOrScreenOn(0)), m.press(center, PointerButton.Secondary, shift = true), "Shift: bhsn")
+    }
 }

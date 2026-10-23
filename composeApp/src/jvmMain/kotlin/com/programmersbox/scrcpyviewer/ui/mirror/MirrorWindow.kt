@@ -62,7 +62,11 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.awt.awtEventOrNull
 import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -83,6 +87,7 @@ import com.programmersbox.scrcpyviewer.options.CommandLine
 import com.programmersbox.scrcpyviewer.options.OptionType
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
+import com.programmersbox.scrcpyviewer.scrcpy.DeviceMessage
 import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
 import com.programmersbox.scrcpyviewer.scrcpy.StreamProtocol
@@ -92,10 +97,16 @@ import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
+import java.awt.Point
+import java.awt.Robot
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
+import java.awt.image.BufferedImage
 import java.awt.event.KeyEvent as AwtKeyEvent
 import javax.swing.SwingUtilities
 import kotlin.math.abs
@@ -142,6 +153,8 @@ data class MirrorUiState(
     val command: String = "scrcpy",
     val background: Color? = null,
     val actionsEnabled: Boolean = true,
+    /** Set while the UHID mouse holds the pointer: "Mouse captured — press <key> to release". */
+    val captureHint: String? = null,
 )
 
 /** `<model> · <serial>`, or the `window-title` option. */
@@ -183,6 +196,11 @@ fun parseHexColor(value: String?): Color? {
  * One device's mirror window: [session] keeps running on the app scope; closing the window calls
  * [MirrorController.close]. Keys typed while the window is focused go to the device; Cmd+V (Ctrl+V off macOS)
  * pastes the computer clipboard through `SetClipboard(paste=true)` (or as text with `legacy-paste`).
+ *
+ * `keyboard=uhid` and `mouse=uhid` create the HID devices on the session ([HidKeyboard], [HidMouse]) and send HID
+ * reports instead of key/text/touch injections. The UHID mouse is relative, so the window captures the pointer
+ * (see [MouseCapture]): the cursor is hidden over the video and moved back to its centre with `java.awt.Robot`,
+ * and motion is sent as deltas. Without a working Robot the deltas still flow, until the pointer leaves the video.
  */
 @Composable
 fun MirrorWindow(
@@ -230,6 +248,13 @@ fun MirrorWindow(
 
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     val currentFit by rememberUpdatedState(fit)
+    val control = "no-control" !in e
+    val hidKeyboard = remember(session) { if (control && e["keyboard"] == "uhid") HidKeyboard() else null }
+    val hidMouse = remember(session) { if (control && e["mouse"] == "uhid") HidMouse() else null }
+    val capture = remember(session) { hidMouse?.let { MouseCapture() } }
+    val tracker = remember(session) { PointerDeltaTracker() }
+    val robot = remember(hidMouse != null) { if (hidMouse != null) runCatching { Robot() }.getOrNull() else null }
+    val captured = capture?.active?.collectAsState()?.value == true
     val mapper = remember(session) {
         InputMapper.forOptions(
             values,
@@ -238,9 +263,36 @@ fun MirrorWindow(
             frameSize = { session.frames.value?.let { IntSize(it.width, it.height) } ?: session.frameSize.value },
             viewRect = { Rect(0f, 0f, viewSize.width.toFloat(), viewSize.height.toFloat()) },
             stretch = { stretch && currentFit },
+            hidMouse = hidMouse,
         )
     }
     val send: (List<ControlMessage>) -> Unit = { msgs -> msgs.forEach(session::send) }
+
+    // UHID devices live as long as the session: created first thing (the control queue holds them until the
+    // socket is up), destroyed when the window lets go of the session.
+    DisposableEffect(session) {
+        hidKeyboard?.let { session.send(it.open()) }
+        hidMouse?.let { session.send(it.open()) }
+        onDispose {
+            hidKeyboard?.let { session.send(it.close()) }
+            hidMouse?.let { session.send(it.close()) }
+        }
+    }
+    if (hidKeyboard != null) {
+        LaunchedEffect(session) {
+            session.deviceMessages.collect { msg ->
+                if (msg is DeviceMessage.UhidOutput && msg.id == HidKeyboard.ID) hidKeyboard.onOutput(msg.data)
+            }
+        }
+    }
+    if (capture != null) {
+        // As the scrcpy client: capture on the first frame.
+        LaunchedEffect(session) {
+            session.frameSize.first { it != null }
+            capture.setActive(true)
+        }
+        LaunchedEffect(captured) { tracker.reset() }
+    }
 
     val state = MirrorUiState(
         model = model,
@@ -261,6 +313,7 @@ fun MirrorWindow(
         command = CommandLine.build(serial, values),
         background = parseHexColor(e["background-color"]),
         actionsEnabled = status == SessionStatus.Running && "no-control" !in e,
+        captureHint = if (captured) "Mouse captured — press ${MouseCapture.keyLabel()} to release" else null,
     )
 
     Window(
@@ -284,7 +337,9 @@ fun MirrorWindow(
             var pasteDown = false
             val dispatcher = KeyEventDispatcher { ev ->
                 val inWindow = ev.component === awtWindow || SwingUtilities.getWindowAncestor(ev.component) === awtWindow
-                if (!inWindow || "no-control" in e || e["keyboard"] == "disabled") return@KeyEventDispatcher false
+                if (!inWindow || "no-control" in e) return@KeyEventDispatcher false
+                if (capture != null && capture.key(ev.id, ev.keyCode, ev.keyLocation)) return@KeyEventDispatcher true
+                if (e["keyboard"] == "disabled") return@KeyEventDispatcher false
                 if (ev.keyCode == AwtKeyEvent.VK_V && ev.modifiersEx and paste != 0 && ev.id == AwtKeyEvent.KEY_PRESSED) {
                     pasteDown = true
                     val text = runCatching {
@@ -300,16 +355,59 @@ fun MirrorWindow(
                     if (ev.id == AwtKeyEvent.KEY_RELEASED) pasteDown = false
                     return@KeyEventDispatcher true
                 }
+                if (hidKeyboard != null) {
+                    send(hidKeyboard.awtKey(ev.id, ev.keyCode, ev.keyLocation))
+                    return@KeyEventDispatcher true // HID keys never become text
+                }
                 val msgs = mapper.awtKey(ev.id, ev.keyCode, ev.keyChar, ev.modifiersEx, ev.keyLocation)
                 send(msgs)
                 msgs.isNotEmpty()
             }
+            val focus = object : WindowAdapter() {
+                override fun windowLostFocus(ev: WindowEvent) {
+                    capture?.focusLost()
+                    hidKeyboard?.let { send(it.releaseAll()) }
+                }
+            }
             val kfm = KeyboardFocusManager.getCurrentKeyboardFocusManager()
             kfm.addKeyEventDispatcher(dispatcher)
-            onDispose { kfm.removeKeyEventDispatcher(dispatcher) }
+            awtWindow.addWindowFocusListener(focus)
+            onDispose {
+                kfm.removeKeyEventDispatcher(dispatcher)
+                awtWindow.removeWindowFocusListener(focus)
+            }
         }
 
         val density = LocalDensity.current
+
+        /** Relative mode: deltas from screen positions, and the pointer kept near the centre of the video. */
+        fun capturedPointer(ev: PointerEvent) {
+            val c = capture ?: return
+            val kind = when (ev.type) {
+                PointerEventType.Move -> PointerKind.Move
+                PointerEventType.Press -> PointerKind.Press
+                PointerEventType.Release -> PointerKind.Release
+                PointerEventType.Scroll -> PointerKind.Scroll
+                else -> null
+            }
+            val awt = ev.awtEventOrNull
+            val local = ev.changes.firstOrNull()?.position
+            if (kind == null || c.pointer(kind)) {
+                if (kind == null && ev.type == PointerEventType.Exit && c.active.value && awt != null && local != null) {
+                    recentre(robot, tracker, awtWindow, awt, local, viewSize, density.density, force = true)
+                }
+                return
+            }
+            if (kind != PointerKind.Move) {
+                send(mapper.pointer(ev))
+                return
+            }
+            if (awt == null || local == null) return
+            val d = tracker.move(awt.xOnScreen, awt.yOnScreen)
+            send(mapper.relativeMove(d.x, d.y))
+            recentre(robot, tracker, awtWindow, awt, local, viewSize, density.density, force = false)
+        }
+
         var stage by remember { mutableStateOf(IntSize.Zero) }
         var autoSized by remember { mutableStateOf(explicitSize) }
         var lastStage by remember { mutableStateOf(IntSize.Zero) }
@@ -350,13 +448,53 @@ fun MirrorWindow(
                     onFitChange = { fit = it },
                     onAction = { send(it.messages()) },
                     onReconnect = { controller.reconnect(serial) },
-                    onPointer = { if ("no-control" !in e && e["mouse"] != "disabled") send(mapper.pointer(it)) },
+                    onPointer = {
+                        when {
+                            "no-control" in e -> Unit
+                            capture != null -> capturedPointer(it)
+                            else -> send(mapper.pointer(it))
+                        }
+                    },
                     onViewSize = { viewSize = it },
                     onStageSize = { stage = it },
                 )
             }
         }
     }
+}
+
+/**
+ * Moves the captured pointer back to the centre of the video view once it is more than a quarter of the view away
+ * (or always with [force], when it left the view), so it never hits the screen edge. [local] is the event position
+ * in the view (px), [awt] the same event in screen coordinates (points). The target is kept inside the window.
+ */
+private fun recentre(
+    robot: Robot?,
+    tracker: PointerDeltaTracker,
+    window: java.awt.Window,
+    awt: java.awt.event.MouseEvent,
+    local: androidx.compose.ui.geometry.Offset,
+    viewSize: IntSize,
+    density: Float,
+    force: Boolean,
+) {
+    if (robot == null || viewSize.width <= 0 || viewSize.height <= 0) return
+    val originX = awt.xOnScreen - local.x / density
+    val originY = awt.yOnScreen - local.y / density
+    val w = window.bounds
+    val cx = (originX + viewSize.width / 2f / density).roundToInt().coerceIn(w.x + 40, maxOf(w.x + 40, w.x + w.width - 40))
+    val cy = (originY + viewSize.height / 2f / density).roundToInt().coerceIn(w.y + 40, maxOf(w.y + 40, w.y + w.height - 40))
+    val limit = min(viewSize.width, viewSize.height) / 4f / density
+    if (!force && abs(awt.xOnScreen - cx) <= limit && abs(awt.yOnScreen - cy) <= limit) return
+    robot.mouseMove(cx, cy)
+    tracker.warped(IntOffset(cx, cy))
+}
+
+/** Transparent cursor shown over the video while the mouse is captured; created on first use (not headless). */
+private val blankPointerIcon: PointerIcon by lazy {
+    runCatching {
+        PointerIcon(Toolkit.getDefaultToolkit().createCustomCursor(BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), Point(0, 0), "blank"))
+    }.getOrDefault(PointerIcon.Default)
 }
 
 /**
@@ -463,7 +601,7 @@ private fun Stage(
                 event.changes.forEach { it.consume() }
             }
         }
-    }
+    }.then(if (state.captureHint != null) Modifier.pointerHoverIcon(blankPointerIcon) else Modifier)
     val fs = state.frameSize
     if (state.fit || fs == null) {
         Canvas(Modifier.fillMaxSize().onSizeChanged(onViewSize).then(input)) {
@@ -610,5 +748,6 @@ private fun StatusLine(state: MirrorUiState) {
         Text(size, style = style, color = colors.onSurfaceVariant)
         Text("${state.codec} · ${state.bitRate}", style = style, color = colors.onSurfaceVariant)
         Text("%.1f fps".format(state.fps), style = style, color = colors.onSurfaceVariant)
+        state.captureHint?.let { Text(it, style = style, color = colors.primary, maxLines = 1) }
     }
 }

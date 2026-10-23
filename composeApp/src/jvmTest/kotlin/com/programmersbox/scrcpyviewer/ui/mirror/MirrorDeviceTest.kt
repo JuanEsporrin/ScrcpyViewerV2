@@ -6,6 +6,7 @@ import com.programmersbox.scrcpyviewer.adb.DeviceTracker
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
+import com.programmersbox.scrcpyviewer.scrcpy.DeviceMessage
 import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
 import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
@@ -16,6 +17,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.awt.event.KeyEvent as AwtKeyEvent
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.jetbrains.skia.EncodedImageFormat
@@ -55,8 +58,8 @@ class MirrorDeviceTest {
         return p.inputStream.bufferedReader().readLines().also { p.waitFor() }
     }
 
-    private fun session(serial: String): ScrcpySession = ScrcpySession(
-        serial, values, launcher,
+    private fun session(serial: String, options: OptionValues = values): ScrcpySession = ScrcpySession(
+        serial, options, launcher,
         decoderFactory = { meta, s -> VideoDecoder(meta.codecId, s::publishFrame, s::publishFps).also { decoders[s] = it } },
         audioFactory = { _, _ -> null },
         scope = scope,
@@ -207,5 +210,91 @@ class MirrorDeviceTest {
         val d = second.awaitFrames(10)
         println("[device] reconnected: ${second.status.value}, ${d.decodedFrames} frames")
         controller.closeAll()
+    }
+
+    /** Input devices named "scrcpy" (the server's name for a UHID device created without a name). */
+    private fun uhidDevices(): List<String> {
+        val lines = adbLines("-s", primary, "shell", "dumpsys", "input")
+        return lines.filter { Regex("""^  Device \d+: scrcpy$""").matches(it) }
+    }
+
+    /** The InputReader block of the first scrcpy device: id, sources, keyboard type. */
+    private fun uhidDetails(): List<String> {
+        val lines = adbLines("-s", primary, "shell", "dumpsys", "input")
+        val start = lines.indexOfFirst { Regex("""^  Device \d+: scrcpy$""").matches(it) }
+        if (start < 0) return emptyList()
+        return lines.drop(start).take(12).filter { it.contains("Device ") || it.contains("Sources") || it.contains("KeyboardType") || it.contains("Location") }
+    }
+
+    /** Events of the input dispatcher's recent queue, e.g. "KeyEvent(" or "MotionEvent(". */
+    private fun recentEvents(prefix: String): List<String> {
+        val text = adbLines("-s", primary, "shell", "dumpsys", "input").joinToString("\n")
+        return Regex(Regex.escape(prefix) + """[^)]*\)""").findAll(text).map { it.value }.toList()
+    }
+
+    private suspend fun awaitUhidCount(count: Int, timeoutMs: Long = 5_000) = withTimeout(timeoutMs) {
+        while (uhidDevices().size != count) delay(200)
+    }
+
+    private fun home(s: ScrcpySession) {
+        s.send(ControlMessage.InjectKeycode(InputMapper.KEY_ACTION_DOWN, InputMapper.KEYCODE_HOME, 0, 0))
+        s.send(ControlMessage.InjectKeycode(InputMapper.KEY_ACTION_UP, InputMapper.KEYCODE_HOME, 0, 0))
+    }
+
+    @Test
+    fun `f uhid keyboard is created, types a and is destroyed`() = runBlocking<Unit> {
+        val s = session(primary, OptionValues(values.entries + ("keyboard" to "uhid")))
+        s.awaitFrames(1)
+        val before = uhidDevices().size
+        val kb = HidKeyboard(lockState = { 0 }, forwardLockKeys = false)
+        val outputs = ArrayList<String>()
+        val collector = launch {
+            s.deviceMessages.collect { m ->
+                if (m is DeviceMessage.UhidOutput) synchronized(outputs) { outputs += "id=${m.id} led=${m.data.joinToString { "%02x".format(it) }}" }
+            }
+        }
+        s.send(kb.open())
+        awaitUhidCount(before + 1)
+        println("[device] UHID keyboard created: ${uhidDetails()}")
+        // "a" on the home screen at most opens the launcher search; HOME closes it again below.
+        kb.awtKey(AwtKeyEvent.KEY_PRESSED, AwtKeyEvent.VK_A, AwtKeyEvent.KEY_LOCATION_STANDARD).forEach(s::send)
+        kb.awtKey(AwtKeyEvent.KEY_RELEASED, AwtKeyEvent.VK_A, AwtKeyEvent.KEY_LOCATION_STANDARD).forEach(s::send)
+        delay(500)
+        val id = uhidDevices().single().substringAfter("Device ").substringBefore(':')
+        // KEYCODE_A is 29; the dispatcher's recent queue lists the HID device's events by its input device id.
+        val keys = recentEvents("KeyEvent(").filter { it.contains("deviceId=$id,") && it.contains("keyCode=29,") }
+        println("[device] KeyEvents from UHID device $id: $keys")
+        assertTrue(keys.any { it.contains("action=DOWN") } && keys.any { it.contains("action=UP") }, "HID 'a' press and release reach Android")
+        println("[device] UHID output reports: ${synchronized(outputs) { outputs.toList() }}")
+        s.send(kb.close())
+        awaitUhidCount(before)
+        println("[device] after UhidDestroy: ${uhidDevices().size} scrcpy input devices (was $before)")
+        collector.cancel()
+        home(s)
+        delay(800)
+        s.close()
+    }
+
+    @Test
+    fun `g uhid mouse is created, moves and is destroyed`() = runBlocking<Unit> {
+        val s = session(primary, OptionValues(values.entries + ("mouse" to "uhid")))
+        s.awaitFrames(1)
+        val before = uhidDevices().size
+        val mouse = HidMouse()
+        s.send(mouse.open())
+        awaitUhidCount(before + 1)
+        println("[device] UHID mouse created: ${uhidDetails()}")
+        repeat(5) { s.send(mouse.motion(20, 10, 0)); delay(30) }
+        delay(300)
+        val id = uhidDevices().single().substringAfter("Device ").substringBefore(':')
+        val moves = recentEvents("MotionEvent(").filter { it.contains("deviceId=$id,") && it.contains("action=HOVER_MOVE") }
+        println("[device] HOVER_MOVE from UHID device $id: ${moves.map { it.substringAfter("pointers=") }}")
+        assertTrue(moves.size >= 2, "relative HID motion moves the device pointer")
+        s.send(mouse.close())
+        awaitUhidCount(before)
+        println("[device] after UhidDestroy: ${uhidDevices().size} scrcpy input devices (was $before)")
+        home(s)
+        delay(800)
+        s.close()
     }
 }

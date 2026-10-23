@@ -8,14 +8,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class OptionCatalogTest {
-    /** Hidden options from Global Constraints, without leading dashes. */
+    /** Hidden options from Global Constraints, without leading dashes, plus `gamepad` (the JVM has no gamepad API). */
     private val hidden = listOf(
         "otg", "serial", "s", "d", "e", "select-usb", "select-tcpip", "tcpip",
         "list-apps", "list-cameras", "list-camera-sizes", "list-displays", "list-encoders",
         "h", "help", "v", "version", "V", "verbosity",
         "v4l2-sink", "v4l2-buffer", "render-driver", "no-mipmaps", "hwdec", "shortcut-mod",
         "pause-on-exit", "no-window", "window-borderless", "disable-screensaver",
-        "no-terminal-title", "kill-adb-on-close",
+        "no-terminal-title", "kill-adb-on-close", "gamepad",
     )
 
     /** Every `.longopt` in scrcpy v5.0 app/src/cli.c, in table order. */
@@ -105,12 +105,19 @@ class OptionCatalogTest {
 
     @Test
     fun `input modes exclude aoa`() {
-        for (flag in listOf("keyboard", "mouse", "gamepad")) {
+        for (flag in listOf("keyboard", "mouse")) {
             val type = assertNotNull(OptionCatalog.byFlag(flag)).type
             assertTrue(type is OptionType.Choice, flag)
             assertFalse("aoa" in type.values, flag)
             assertNotNull(type.validate("aoa"), "$flag=aoa must be rejected")
         }
+    }
+
+    @Test
+    fun `mouse-bind is validated as cli c parse_mouse_bindings`() {
+        val type = assertNotNull(OptionCatalog.byFlag("mouse-bind")).type
+        for (ok in listOf("bhsn:++++", "++++:bhsn", "++++", "-b-h", "nshb:----")) assertNull(type.validate(ok), ok)
+        for (bad in listOf("bhs", "bhsn:", "bhsn:+++", "bhsnn", "bhsx", "bhsn-++++", "BHSN")) assertNotNull(type.validate(bad), bad)
     }
 
     @Test
