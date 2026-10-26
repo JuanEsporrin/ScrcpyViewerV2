@@ -15,6 +15,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorContent
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorUiState
+import com.programmersbox.scrcpyviewer.ui.mirror.dropHint
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import org.jetbrains.skia.Bitmap
@@ -122,6 +123,44 @@ class MirrorScreenshotTest {
         val dots = ClickIndicator(mapper::displayedRect).apply { press(Offset(560f, 120f)) }
         render("mirror-show-touches.png", ThemeMode.Light, clickIndicator = dots)
     }
+
+    @Test
+    fun `mirror drop overlay mixed`() = render(
+        "mirror-drop-mixed.png", ThemeMode.Light,
+        state.copy(transferEnabled = true, dropHint = dropHint(listOf(Paths.get("/x/app.apk"), Paths.get("/x/a.jpg"), Paths.get("/x/b.txt")), "/sdcard/Download/", true) { false }),
+    )
+
+    @Test
+    fun `mirror drop overlay push dark`() = render(
+        "mirror-drop-push-dark.png", ThemeMode.Dark,
+        state.copy(transferEnabled = true, dropHint = dropHint(listOf(Paths.get("/x/photo.jpg")), "/sdcard/Download/", true) { false }),
+    )
+
+    @Test
+    fun `mirror drop overlay apk narrow`() = render(
+        "mirror-drop-apk-420x800.png", ThemeMode.Light,
+        state.copy(transferEnabled = true, dropHint = dropHint(listOf(Paths.get("/x/app.apk")), "/sdcard/Download/", true) { false }),
+        width = 420, height = 800,
+    )
+
+    @Test
+    fun `mirror drop overlay disconnected`() = render(
+        "mirror-drop-disconnected.png", ThemeMode.Light,
+        state.copy(status = SessionStatus.Disconnected, fps = 0.0, actionsEnabled = false, dropHint = dropHint(listOf(Paths.get("/x/app.apk")), "/sdcard/Download/", false) { false }),
+    )
+
+    @Test
+    fun `mirror transfer buttons and progress`() = render(
+        "mirror-transfer-progress.png", ThemeMode.Light,
+        state.copy(transferEnabled = true, transferLabel = "Pushing 2 of 3: photo.jpg…"),
+    )
+
+    @Test
+    fun `mirror transfer buttons short window dark`() = render(
+        "mirror-transfer-short-640x560-dark.png", ThemeMode.Dark,
+        state.copy(transferEnabled = true, transferLabel = "Installing app.apk…"),
+        width = 640, height = 560,
+    )
 
     @Test
     fun `mirror narrow 320`() = render("mirror-narrow-320x700.png", ThemeMode.Light, width = 320, height = 700)

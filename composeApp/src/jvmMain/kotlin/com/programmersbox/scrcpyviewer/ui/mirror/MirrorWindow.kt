@@ -110,7 +110,19 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
+import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.Device
+import com.programmersbox.scrcpyviewer.files.FileTransferQueue
+import com.programmersbox.scrcpyviewer.files.pushTarget
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.awtTransferable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.Screenshot
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
@@ -160,9 +172,11 @@ enum class MirrorAction(val label: String, val keycode: Int? = null) {
     Power("Power", InputMapper.KEYCODE_POWER),
     Screenshot("Screenshot"),
     Record("Record"),
+    InstallApk("Install APK…"),
+    PushFile("Push file…"),
 }
 
-/** Control messages for a toolbar action; Screenshot and Record send nothing (the window handles them). */
+/** Control messages for a toolbar action; Screenshot, Record, InstallApk and PushFile send nothing (the window handles them). */
 fun MirrorAction.messages(): List<ControlMessage> = when {
     keycode != null -> listOf(
         ControlMessage.InjectKeycode(InputMapper.KEY_ACTION_DOWN, keycode, 0, 0),
@@ -204,6 +218,12 @@ data class MirrorUiState(
     val recordingLabel: String? = null,
     /** `display-orientation`: how the frame is turned on screen. */
     val orientation: DisplayOrientation = DisplayOrientation.R0,
+    /** Install APK… and Push file… can be used (adb available, device connected). */
+    val transferEnabled: Boolean = false,
+    /** "Installing app.apk…" / "Pushing 2 of 3: photo.jpg…" while the install/push queue runs. */
+    val transferLabel: String? = null,
+    /** Set while files are dragged over the window. */
+    val dropHint: DropHint? = null,
 ) {
     val fit: Boolean get() = zoom == null
 }
@@ -262,6 +282,7 @@ fun parseHexColor(value: String?): Color? {
  * (see [MouseCapture]): the cursor is hidden over the video and moved back to its centre with `java.awt.Robot`,
  * and motion is sent as deltas. Without a working Robot the deltas still flow, until the pointer leaves the video.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun MirrorWindow(
     serial: String,
@@ -270,6 +291,9 @@ fun MirrorWindow(
     themeMode: ThemeMode,
     /** `Settings.captureDir`: where screenshots and recordings started from the toolbar go. */
     captureDir: String,
+    /** Runs `adb install` / `adb push` for dropped files and the Install APK… / Push file… buttons; null disables them. */
+    adb: AdbClient? = null,
+    fileDialogs: TransferFileDialogs = AwtTransferFileDialogs,
 ) {
     val values = session.values
     val e = values.entries
@@ -355,6 +379,34 @@ fun MirrorWindow(
                 recordStarting = false
             }
         }
+    }
+
+    // Install / push queue (v5.0 file_pusher.c): one per session, cancelled (running adb killed) when the window
+    // closes or a Reconnect replaces the session.
+    val pushTarget = remember(values) { pushTarget(values) }
+    val transferScope = remember(session) { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
+    DisposableEffect(transferScope) { onDispose { transferScope.cancel() } }
+    val transfers = remember(session, adb) {
+        adb?.let {
+            FileTransferQueue(
+                serial, it, pushTarget,
+                canTransfer = { session.status.value.let { s -> s != SessionStatus.Disconnected && s != SessionStatus.Failed } },
+                scanFile = { path -> session.send(ControlMessage.ScanFile(path)) },
+                scope = transferScope,
+            )
+        }
+    }
+    val transferProgress = transfers?.progress?.collectAsState()?.value
+    if (transfers != null) {
+        LaunchedEffect(transfers) { transfers.results.collect { notify(it.message) } }
+    }
+    val transferConnected = status != SessionStatus.Disconnected && status != SessionStatus.Failed
+    /** Files dragged over the window (null until the platform tells them), and whether a drag is in progress. */
+    var dragPaths by remember { mutableStateOf<List<java.nio.file.Path>?>(null) }
+    var dragging by remember { mutableStateOf(false) }
+    fun startTransfers(paths: List<java.nio.file.Path>) {
+        if (paths.isEmpty()) return
+        if (transfers == null) notify("adb is not available") else transfers.enqueuePaths(paths)
     }
 
     val orientation = remember(values) { DisplayOrientation.forOptions(values) }
@@ -475,6 +527,9 @@ fun MirrorWindow(
         recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),
         recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
         orientation = orientation,
+        transferEnabled = transfers != null && transferConnected,
+        transferLabel = transferProgress?.label,
+        dropHint = if (dragging) dropHint(dragPaths, pushTarget, connected = transfers != null && transferConnected) else null,
     )
 
     Window(
@@ -556,6 +611,34 @@ fun MirrorWindow(
         }
 
         val density = LocalDensity.current
+        val dropTarget = remember {
+            object : DragAndDropTarget {
+                override fun onStarted(event: DragAndDropEvent) {
+                    dragPaths = event.awtTransferable.filePaths()
+                }
+
+                override fun onEntered(event: DragAndDropEvent) {
+                    dragging = true
+                    if (dragPaths == null) dragPaths = event.awtTransferable.filePaths()
+                }
+
+                override fun onExited(event: DragAndDropEvent) {
+                    dragging = false
+                }
+
+                override fun onEnded(event: DragAndDropEvent) {
+                    dragging = false
+                    dragPaths = null
+                }
+
+                override fun onDrop(event: DragAndDropEvent): Boolean {
+                    dragging = false
+                    val paths = event.awtTransferable.filePaths() ?: return false
+                    startTransfers(paths)
+                    return true
+                }
+            }
+        }
 
         var stage by remember { mutableStateOf(IntSize.Zero) }
         var autoSized by remember { mutableStateOf(explicitSize) }
@@ -589,7 +672,12 @@ fun MirrorWindow(
         }
 
         ScrcpyViewerTheme(themeMode) {
-            Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxSize().dragAndDropTarget(
+                    shouldStartDragAndDrop = { it.awtTransferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor) },
+                    target = dropTarget,
+                ),
+            ) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                     CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
                     MirrorContent(
@@ -601,6 +689,8 @@ fun MirrorWindow(
                             when (action) {
                                 MirrorAction.Screenshot -> takeScreenshot()
                                 MirrorAction.Record -> toggleRecording()
+                                MirrorAction.InstallApk -> startTransfers(fileDialogs.chooseApks(awtWindow))
+                                MirrorAction.PushFile -> startTransfers(fileDialogs.chooseFiles(awtWindow, pushTarget))
                                 else -> send(action.messages())
                             }
                         },
@@ -682,6 +772,7 @@ fun MirrorContent(
                 } else if (state.status == SessionStatus.Connecting || state.frameSize == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
+                state.dropHint?.let { DropOverlay(it) }
             }
             SideToolbar(state, onAction)
         }
@@ -985,6 +1076,8 @@ private val toolbarIcons: Map<MirrorAction, ImageVector> = mapOf(
     MirrorAction.Power to Icons.Filled.PowerSettingsNew,
     MirrorAction.Screenshot to Icons.Filled.PhotoCamera,
     MirrorAction.Record to Icons.Filled.FiberManualRecord,
+    MirrorAction.InstallApk to Icons.Filled.Android,
+    MirrorAction.PushFile to Icons.Filled.UploadFile,
 )
 
 @Composable
@@ -999,6 +1092,7 @@ private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) 
             listOf(MirrorAction.Back, MirrorAction.Home, MirrorAction.Recents),
             listOf(MirrorAction.VolumeUp, MirrorAction.VolumeDown, MirrorAction.Rotate, MirrorAction.Power),
             listOf(MirrorAction.Screenshot, MirrorAction.Record),
+            listOf(MirrorAction.InstallApk, MirrorAction.PushFile),
         )
         groups.forEachIndexed { i, group ->
             if (i > 0) HorizontalDivider(Modifier.width(28.dp).padding(vertical = 4.dp), color = colors.outlineVariant)
@@ -1007,6 +1101,7 @@ private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) 
                 val enabled = when (action) {
                     MirrorAction.Screenshot -> state.screenshotEnabled
                     MirrorAction.Record -> state.recordEnabled
+                    MirrorAction.InstallApk, MirrorAction.PushFile -> state.transferEnabled
                     else -> state.actionsEnabled
                 }
                 ToolbarButton(
@@ -1052,6 +1147,7 @@ private fun StatusLine(state: MirrorUiState) {
         val showCodec = maxWidth >= 600.dp
         val showMax = maxWidth >= 480.dp
         val showFps = maxWidth >= 300.dp
+        val transferMax = maxWidth * 0.6f
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -1060,6 +1156,13 @@ private fun StatusLine(state: MirrorUiState) {
             val style = MaterialTheme.typography.labelMedium
             state.recordingLabel?.let {
                 Text(it, style = style, color = colors.error, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+            }
+            state.transferLabel?.let {
+                // Measured before the weighted readouts, so the frame size ellipsizes first; capped for long names.
+                Row(Modifier.widthIn(max = transferMax), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+                    Text(it, Modifier.weight(1f, fill = false), style = style, color = colors.primary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
             }
             val fs = state.frameSize
             val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (if (showMax) state.maxSize?.let { " shown at $it max" } ?: "" else "")
