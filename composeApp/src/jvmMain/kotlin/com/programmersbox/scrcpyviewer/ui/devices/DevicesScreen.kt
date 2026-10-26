@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -59,11 +59,15 @@ import com.programmersbox.scrcpyviewer.options.OptionCatalog
 import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionSpec
 import com.programmersbox.scrcpyviewer.ui.common.CopyButton
+import com.programmersbox.scrcpyviewer.ui.common.DetailBackButton
+import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
+import com.programmersbox.scrcpyviewer.ui.common.ResizableListDetail
+import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.common.OptionRow
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
 
 @Composable
-fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier) {
+fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier, panes: ListDetailPanes = rememberListDetailPanes()) {
     val state by viewModel.state.collectAsState()
     DevicesContent(
         state = state,
@@ -78,8 +82,16 @@ fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier) {
         onMirror = viewModel::mirror,
         modifier = modifier,
         onPreset = viewModel::applyPreset,
+        panes = panes,
     )
 }
+
+/** Narrowest device column that still shows a device row's dot, name and serial. */
+val DEVICE_LIST_MIN_WIDTH = 240.dp
+private val DeviceListPreferredWidth = 270.dp
+
+/** Narrowest options pane that still fits the search field and two columns of option rows. */
+val DEVICE_OPTIONS_MIN_WIDTH = 640.dp
 
 /** Stateless Devices screen (Concept C: device column, searchable option grid, command footer). */
 @Composable
@@ -98,6 +110,7 @@ fun DevicesContent(
     onPreset: (String?) -> Unit = {},
     /** Starts the preset menu open (for screenshots). */
     presetMenuOpen: Boolean = false,
+    panes: ListDetailPanes = rememberListDetailPanes(),
 ) {
     Column(modifier.fillMaxSize()) {
         state.persistenceError?.let {
@@ -108,32 +121,34 @@ fun DevicesContent(
                 )
             }
         }
-        Row(Modifier.weight(1f).fillMaxWidth()) {
-            DeviceColumn(state, onSelect, onOpen)
-            VerticalRule()
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                if (state.selectedSerial == null) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("Select a device to choose its options", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ResizableListDetail(
+            panes = panes,
+            listMinWidth = DEVICE_LIST_MIN_WIDTH,
+            listPreferredWidth = DeviceListPreferredWidth,
+            detailMinWidth = DEVICE_OPTIONS_MIN_WIDTH,
+            list = { DeviceColumn(state, onSelect = { onSelect(it); panes.navigation.openDetail() }, onOpen) },
+            detail = { onBack ->
+                Column(Modifier.fillMaxSize()) {
+                    if (state.selectedSerial == null) {
+                        if (onBack != null) DetailBackButton(onBack, Modifier.padding(start = 6.dp, top = 6.dp))
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("Select a device to choose its options", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        OptionsPane(state, onQuery, onGroup, onToggle, onValue, onBack, Modifier.weight(1f))
+                        Footer(state, onSave, onSaveAsNew, onMirror, onPreset, presetMenuOpen)
                     }
-                } else {
-                    OptionsPane(state, onQuery, onGroup, onToggle, onValue, Modifier.weight(1f))
-                    Footer(state, onSave, onSaveAsNew, onMirror, onPreset, presetMenuOpen)
                 }
-            }
-        }
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        )
     }
-}
-
-@Composable
-private fun VerticalRule() {
-    Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
 }
 
 @Composable
 private fun DeviceColumn(state: DevicesUiState, onSelect: (String) -> Unit, onOpen: (String) -> Unit) {
     Column(
-        Modifier.width(270.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
@@ -218,10 +233,12 @@ private fun OptionsPane(
     onGroup: (OptionGroup?) -> Unit,
     onToggle: (String, Boolean) -> Unit,
     onValue: (String, String) -> Unit,
+    onBack: (() -> Unit)?,
     modifier: Modifier,
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (onBack != null) DetailBackButton(onBack, Modifier.offset(x = (-8).dp))
             Text("Options", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             OutlinedTextField(
                 value = state.query,
