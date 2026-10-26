@@ -1,7 +1,7 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import java.net.URI
 import java.security.MessageDigest
 import java.util.zip.ZipFile
-import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -54,7 +54,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
-            packageVersion = "1.0.0"
+            packageVersion = "1.1.0"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS { iconFile.set(project.file("icons/icon.icns")) }
             windows { iconFile.set(project.file("icons/icon.ico")) }
