@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,7 +85,7 @@ fun PresetsScreen(
     val import by viewModel.importState.collectAsState()
     val snackbar = LocalSnackbarHostState.current
     LaunchedEffect(viewModel) { viewModel.messages.collect { snackbar?.showSnackbar(it) } }
-    var pasting by remember { mutableStateOf(false) }
+    var pasting by rememberSaveable { mutableStateOf(false) }
 
     /** Runs [block]; shows the failure in the snackbar instead of crashing the UI on a file error. */
     suspend fun reportErrors(block: () -> Unit) {
@@ -148,7 +149,7 @@ fun PresetsContent(
     modifier: Modifier = Modifier,
     panes: ListDetailPanes = rememberListDetailPanes(),
 ) {
-    var editingId by remember { mutableStateOf<String?>(null) }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     Column(modifier.fillMaxSize()) {
         state.persistenceError?.let { ErrorBanner("Presets can't be saved: $it") }
         ResizableListDetail(
@@ -288,7 +289,7 @@ private fun PresetDetail(
     onExport: (Preset) -> Unit,
     onBack: (() -> Unit)?,
 ) {
-    var confirmDelete by remember(preset.id) { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable(preset.id) { mutableStateOf(false) }
     val isDefault = preset.id == state.defaultId
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -387,9 +388,10 @@ private fun PresetEditor(
     onCancel: () -> Unit,
     onBack: (() -> Unit)?,
 ) {
-    var name by remember(preset.id) { mutableStateOf(preset.name) }
-    var description by remember(preset.id) { mutableStateOf(preset.description) }
-    var values by remember(preset.id) { mutableStateOf(preset.options) }
+    // Saveable so an unsaved draft survives switching rail tabs.
+    var name by rememberSaveable(preset.id) { mutableStateOf(preset.name) }
+    var description by rememberSaveable(preset.id) { mutableStateOf(preset.description) }
+    var values by rememberSaveable(preset.id) { mutableStateOf(preset.options) }
     val errors = values.validate()
     val nameTaken = isNameTaken(name)
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -426,7 +428,7 @@ private fun PresetEditor(
 
 @Composable
 private fun PasteJsonDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Paste JSON") },

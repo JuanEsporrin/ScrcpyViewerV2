@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
@@ -340,7 +341,7 @@ private fun Footer(
     onPreset: (String?) -> Unit,
     presetMenuOpen: Boolean,
 ) {
-    var naming by remember { mutableStateOf(false) }
+    var naming by rememberSaveable { mutableStateOf(false) }
     val modified = state.isModified
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -419,7 +420,7 @@ private fun PresetMenuItem(label: String, checked: Boolean, onClick: () -> Unit)
 
 @Composable
 private fun SaveAsDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Save as new preset") },

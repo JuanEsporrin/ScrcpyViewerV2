@@ -30,9 +30,8 @@ import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavigator
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelRoute
-import com.programmersbox.scrcpyviewer.ui.navigation.fadeThrough
-import androidx.navigation3.runtime.entryProvider
-import androidx.navigation3.ui.NavDisplay
+import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavDisplay
+import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
 import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
@@ -57,8 +56,17 @@ private val TopLevelRoute.icon: ImageVector
         TopLevelRoute.Settings -> Icons.Filled.Settings
     }
 
+/**
+ * The main window's content. [navigator] and the pane states are hoisted (tests pass their own);
+ * the pane states live above the navigation so divider positions survive tab switches.
+ */
 @Composable
-fun App(graph: AppGraph) {
+fun App(
+    graph: AppGraph,
+    navigator: TopLevelNavigator = remember { TopLevelNavigator() },
+    devicesPanes: ListDetailPanes = rememberListDetailPanes(),
+    presetsPanes: ListDetailPanes = rememberListDetailPanes(),
+) {
     val settings by graph.settings.settings.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val fileDialogs = remember { AwtPresetFileDialogs() }
@@ -71,10 +79,6 @@ fun App(graph: AppGraph) {
     }
     ScrcpyViewerTheme(settings.themeMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            val navigator = remember { TopLevelNavigator() }
-            // Hoisted above NavDisplay so each screen's divider position and open pane survive tab switches.
-            val devicesPanes = rememberListDetailPanes()
-            val presetsPanes = rememberListDetailPanes()
             CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
             Row(Modifier.fillMaxSize()) {
                 NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
@@ -88,19 +92,13 @@ fun App(graph: AppGraph) {
                     }
                 }
                 Box(Modifier.fillMaxSize()) {
-                    NavDisplay(
-                        backStack = navigator.backStack,
-                        // Rail destinations are peers; there is no top-level back.
-                        onBack = {},
-                        transitionSpec = fadeThrough(),
-                        popTransitionSpec = fadeThrough(),
-                        predictivePopTransitionSpec = { fadeThrough<TopLevelRoute>()() },
-                        entryProvider = entryProvider {
-                            entry<TopLevelRoute.Devices> { DevicesScreen(graph.devicesViewModel, panes = devicesPanes) }
-                            entry<TopLevelRoute.Presets> { PresetsScreen(graph.presetsViewModel, fileDialogs, panes = presetsPanes) }
-                            entry<TopLevelRoute.Settings> { SettingsScreen(graph.settingsViewModel, settingsDialogs) }
-                        },
-                    )
+                    TopLevelNavDisplay(navigator) { route ->
+                        when (route) {
+                            TopLevelRoute.Devices -> DevicesScreen(graph.devicesViewModel, panes = devicesPanes)
+                            TopLevelRoute.Presets -> PresetsScreen(graph.presetsViewModel, fileDialogs, panes = presetsPanes)
+                            TopLevelRoute.Settings -> SettingsScreen(graph.settingsViewModel, settingsDialogs)
+                        }
+                    }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
                 }
             }

@@ -105,4 +105,30 @@ class ListDetailPanesTest {
         limits.onFirstPaneMeasured(700)
         assertEquals(600, limits.correction())
     }
+
+    @Test
+    fun `reset forgets the laid out width`() {
+        val limits = PaneWidthLimits()
+        limits.update(minFirst = 200f, maxFirst = 600f)
+        limits.onFirstPaneMeasured(700)
+        assertEquals(700, limits.laidOutFirstWidth)
+        limits.reset()
+        assertNull(limits.laidOutFirstWidth)
+        assertNull(limits.correction())
+        assertNull(limits.stepped(24f))
+        assertEquals(50f, limits.consume(50f))
+    }
+
+    @Test
+    fun `keyboard steps stay within the limits`() {
+        val limits = PaneWidthLimits()
+        limits.update(minFirst = 200f, maxFirst = 600f)
+        limits.onFirstPaneMeasured(300)
+        assertEquals(276, limits.stepped(-24f))
+        assertEquals(324, limits.stepped(24f))
+        limits.onFirstPaneMeasured(210)
+        assertEquals(200, limits.stepped(-24f))
+        limits.onFirstPaneMeasured(590)
+        assertEquals(600, limits.stepped(24f))
+    }
 }

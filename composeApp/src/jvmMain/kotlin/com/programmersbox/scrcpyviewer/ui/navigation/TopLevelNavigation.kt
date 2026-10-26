@@ -8,7 +8,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Modifier
+import androidx.navigation3.runtime.NavEntry
+import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
+import androidx.navigation3.scene.SceneStrategy
+import androidx.navigation3.scene.SceneStrategyScope
+import androidx.navigation3.ui.NavDisplay
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.navigation3.runtime.NavKey
@@ -34,24 +42,62 @@ sealed interface TopLevelRoute : NavKey {
 }
 
 /**
- * Owns the Navigation 3 back stack for the rail. Rail destinations are peers, so the stack always
- * holds exactly the current one: switching replaces it, and there is nothing to go back to (the
- * desktop app has no top-level back).
+ * Owns the Navigation 3 back stack for the rail. Every rail destination stays in the stack so its
+ * saved UI state (scroll positions, drafts, open dialogs) survives switching away and back;
+ * selecting a destination moves it to the top. Rail destinations are peers, so there is no
+ * top-level back (see [TabSceneStrategy]).
  */
 @Stable
 class TopLevelNavigator(start: TopLevelRoute = TopLevelRoute.Devices) {
-    val backStack: SnapshotStateList<TopLevelRoute> = mutableStateListOf(start)
+    val backStack: SnapshotStateList<TopLevelRoute> =
+        mutableStateListOf<TopLevelRoute>().apply { addAll(TopLevelRoute.all - start); add(start) }
 
     val current: TopLevelRoute get() = backStack.last()
 
-    val canGoBack: Boolean get() = backStack.size > 1
-
     fun select(route: TopLevelRoute) {
         if (route == current) return
-        // One write keeps the stack non-empty for NavDisplay at every point.
-        backStack[backStack.lastIndex] = route
-        if (backStack.size > 1) backStack.removeRange(0, backStack.lastIndex)
+        // Rotate the list in place; one atomic snapshot so NavDisplay never sees the route missing.
+        Snapshot.withMutableSnapshot {
+            backStack.remove(route)
+            backStack.add(route)
+        }
     }
+}
+
+/**
+ * Shows only the top entry and reports no previous entries, so NavDisplay never enables a back
+ * action between rail destinations while the other entries keep their saved state.
+ */
+class TabSceneStrategy<T : Any> : SceneStrategy<T> {
+    override fun SceneStrategyScope<T>.calculateScene(entries: List<NavEntry<T>>): Scene<T> =
+        TabScene(entries.last().contentKey, entries.last())
+}
+
+private data class TabScene<T : Any>(override val key: Any, val entry: NavEntry<T>) : Scene<T> {
+    override val entries: List<NavEntry<T>> = listOf(entry)
+    override val previousEntries: List<NavEntry<T>> = emptyList()
+    override val content: @Composable () -> Unit = { entry.Content() }
+}
+
+/** NavDisplay for the rail: saved state per destination, no back, fade-through between destinations. */
+@Composable
+fun TopLevelNavDisplay(
+    navigator: TopLevelNavigator,
+    modifier: Modifier = Modifier,
+    content: @Composable (TopLevelRoute) -> Unit,
+) {
+    NavDisplay(
+        backStack = navigator.backStack,
+        modifier = modifier,
+        // Rail destinations are peers; there is no top-level back.
+        onBack = {},
+        entryDecorators = listOf(rememberSaveableStateHolderNavEntryDecorator()),
+        sceneStrategies = listOf(TabSceneStrategy()),
+        transitionSpec = fadeThrough(),
+        popTransitionSpec = fadeThrough(),
+        predictivePopTransitionSpec = { fadeThrough<TopLevelRoute>()() },
+        entryProvider = { route -> NavEntry(route) { content(route) } },
+    )
 }
 
 private val EmphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)

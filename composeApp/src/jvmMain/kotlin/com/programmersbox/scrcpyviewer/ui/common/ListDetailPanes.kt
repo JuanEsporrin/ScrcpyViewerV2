@@ -1,6 +1,18 @@
 package com.programmersbox.scrcpyviewer.ui.common
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
@@ -90,6 +102,20 @@ class PaneWidthLimits {
         firstWidth = width.toFloat()
     }
 
+    /** Forgets the laid-out width (the list is not a side pane in the single-pane layout). */
+    fun reset() {
+        firstWidth = Float.NaN
+    }
+
+    /** The laid-out list width in px, or null before the two-pane layout has been measured. */
+    val laidOutFirstWidth: Int? get() = if (firstWidth.isNaN()) null else firstWidth.toInt()
+
+    /** The list width after a keyboard step of [deltaPx], clamped to the limits; null before layout. */
+    fun stepped(deltaPx: Float): Int? {
+        if (firstWidth.isNaN()) return null
+        return (firstWidth + deltaPx).coerceAtMost(maxFirst).coerceAtLeast(minFirst).toInt()
+    }
+
     fun consume(delta: Float): Float {
         if (firstWidth.isNaN()) return delta
         val target = (firstWidth + delta).coerceAtMost(maxFirst).coerceAtLeast(minFirst)
@@ -112,7 +138,10 @@ class ListDetailPanes internal constructor(
     val expansion: PaneExpansionState,
     val navigation: ListDetailNavigation,
     internal val limits: PaneWidthLimits,
-)
+) {
+    /** The list pane's laid-out width in px in the two-pane layout, else null. */
+    val listWidthPx: Int? get() = limits.laidOutFirstWidth
+}
 
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
@@ -125,6 +154,9 @@ fun rememberListDetailPanes(): ListDetailPanes {
 
 /** Space between the panes; the drag handle sits in it. */
 private val DividerWidth = 16.dp
+
+/** How far Left/Right move the focused divider. */
+private val KeyboardStep = 24.dp
 
 /**
  * List-detail layout with a draggable divider. Both panes show side by side when the width fits
@@ -170,6 +202,7 @@ fun ResizableListDetail(
         // A window resize can leave a dragged divider outside the limits; pull it back.
         LaunchedEffect(partitions, maxWidth) {
             if (partitions == 2) panes.limits.correction()?.let(panes.expansion::setFirstPaneWidth)
+            else panes.limits.reset()
         }
         ListDetailPaneScaffold(
             directive = directive,
@@ -185,12 +218,28 @@ fun ResizableListDetail(
             paneExpansionDragHandle = if (partitions == 2) {
                 { state ->
                     val interaction = remember { MutableInteractionSource() }
-                    VerticalDragHandle(
-                        modifier = Modifier
-                            .paneExpansionDraggable(state, LocalMinimumInteractiveComponentSize.current, interaction)
-                            .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR))),
-                        interactionSource = interaction,
-                    )
+                    val step = with(density) { KeyboardStep.toPx() }
+                    Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
+                        // Hairline so the divider reads in the light theme too.
+                        Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                        VerticalDragHandle(
+                            modifier = Modifier
+                                .paneExpansionDraggable(state, LocalMinimumInteractiveComponentSize.current, interaction)
+                                .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR)))
+                                .onKeyEvent { event ->
+                                    val delta = when {
+                                        event.type != KeyEventType.KeyDown -> return@onKeyEvent false
+                                        event.key == Key.DirectionLeft -> -step
+                                        event.key == Key.DirectionRight -> step
+                                        else -> return@onKeyEvent false
+                                    }
+                                    panes.limits.stepped(delta)?.let(state::setFirstPaneWidth)
+                                    true
+                                }
+                                .focusable(interactionSource = interaction),
+                            interactionSource = interaction,
+                        )
+                    }
                 }
             } else {
                 null

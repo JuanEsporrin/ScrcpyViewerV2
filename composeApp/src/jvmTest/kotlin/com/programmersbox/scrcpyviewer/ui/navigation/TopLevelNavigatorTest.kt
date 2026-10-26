@@ -1,47 +1,63 @@
 package com.programmersbox.scrcpyviewer.ui.navigation
 
+import androidx.navigation3.runtime.NavEntry
+import androidx.navigation3.scene.SceneStrategyScope
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class TopLevelNavigatorTest {
+    private val D = TopLevelRoute.Devices
+    private val P = TopLevelRoute.Presets
+    private val S = TopLevelRoute.Settings
+
     @Test
-    fun `starts on Devices with a single entry`() {
+    fun `starts on Devices with every destination kept below it`() {
         val nav = TopLevelNavigator()
-        assertEquals(TopLevelRoute.Devices, nav.current)
-        assertEquals(listOf<TopLevelRoute>(TopLevelRoute.Devices), nav.backStack.toList())
+        assertEquals(D, nav.current)
+        assertEquals(listOf(P, S, D), nav.backStack.toList())
     }
 
     @Test
-    fun `selecting a tab replaces the current entry`() {
+    fun `selecting a tab moves it to the top and keeps the others`() {
         val nav = TopLevelNavigator()
-        nav.select(TopLevelRoute.Presets)
-        assertEquals(TopLevelRoute.Presets, nav.current)
-        assertEquals(listOf<TopLevelRoute>(TopLevelRoute.Presets), nav.backStack.toList())
-        nav.select(TopLevelRoute.Settings)
-        assertEquals(listOf<TopLevelRoute>(TopLevelRoute.Settings), nav.backStack.toList())
-        nav.select(TopLevelRoute.Devices)
-        assertEquals(listOf<TopLevelRoute>(TopLevelRoute.Devices), nav.backStack.toList())
+        nav.select(P)
+        assertEquals(P, nav.current)
+        assertEquals(listOf(S, D, P), nav.backStack.toList())
+        nav.select(S)
+        assertEquals(listOf(D, P, S), nav.backStack.toList())
+        nav.select(D)
+        assertEquals(listOf(P, S, D), nav.backStack.toList())
+        nav.select(S)
+        assertEquals(listOf(P, D, S), nav.backStack.toList())
     }
 
     @Test
-    fun `reselecting the current tab does not add an entry`() {
-        val nav = TopLevelNavigator(TopLevelRoute.Presets)
-        nav.select(TopLevelRoute.Presets)
-        nav.select(TopLevelRoute.Presets)
-        assertEquals(listOf<TopLevelRoute>(TopLevelRoute.Presets), nav.backStack.toList())
+    fun `reselecting the current tab changes nothing`() {
+        val nav = TopLevelNavigator(P)
+        val before = nav.backStack.toList()
+        nav.select(P)
+        nav.select(P)
+        assertEquals(before, nav.backStack.toList())
     }
 
     @Test
-    fun `back stack never empties so there is no top-level back`() {
+    fun `every destination appears exactly once after any switches`() {
         val nav = TopLevelNavigator()
-        assertEquals(false, nav.canGoBack)
-        nav.select(TopLevelRoute.Settings)
-        assertEquals(false, nav.canGoBack)
-        assertEquals(1, nav.backStack.size)
+        listOf(S, P, P, D, S, D, P).forEach(nav::select)
+        assertEquals(TopLevelRoute.all.toSet(), nav.backStack.toSet())
+        assertEquals(3, nav.backStack.size)
+    }
+
+    @Test
+    fun `tab scene shows only the top entry and offers no back`() {
+        val entries = listOf(P, S, D).map { route -> NavEntry<TopLevelRoute>(route, contentKey = route) {} }
+        val scene = with(TabSceneStrategy<TopLevelRoute>()) { SceneStrategyScope<TopLevelRoute>().calculateScene(entries) }
+        assertEquals(listOf<TopLevelRoute>(D), scene.entries.map { it.contentKey })
+        assertEquals(emptyList(), scene.previousEntries)
     }
 
     @Test
     fun `rail order lists every route once`() {
-        assertEquals(listOf(TopLevelRoute.Devices, TopLevelRoute.Presets, TopLevelRoute.Settings), TopLevelRoute.all)
+        assertEquals(listOf(D, P, S), TopLevelRoute.all)
     }
 }
