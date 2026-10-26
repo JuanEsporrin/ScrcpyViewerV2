@@ -12,6 +12,47 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  # Tests run per OS in parallel with packaging, so no runner does test + package back to back.
+  # Screenshot (-Pscreenshots) and device (-PdeviceTests) tests are excluded by default.
+  test:
+    name: ${{ matrix.os }} (jvmTest)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Linux runtime libraries and Xvfb
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1 libfontconfig1
+
+      # Linux: run under a virtual display so any test that touches AWT/Skia has one.
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum ./gradlew :composeApp:downloadBundledTools :composeApp:jvmTest --stacktrace
+
+      - name: Test
+        if: runner.os != 'Linux'
+        shell: bash
+        run: ./gradlew :composeApp:downloadBundledTools :composeApp:jvmTest --stacktrace
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: composeApp/build/reports/tests/
+          if-no-files-found: ignore
+
   build:
     name: ${{ matrix.os }} (${{ matrix.task }})
     runs-on: ${{ matrix.os }}
@@ -38,28 +79,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Linux runtime libraries and Xvfb
+      - name: Install Linux packaging tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1 libfontconfig1 fakeroot
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
 
-      # Linux: run under a virtual display so any test that touches AWT/Skia has one.
-      # Screenshot (-Pscreenshots) and device (-PdeviceTests) tests are excluded by default.
-      - name: Build, test and package (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum ./gradlew :composeApp:downloadBundledTools :composeApp:jvmTest :composeApp:${{ matrix.task }} --stacktrace
-
-      - name: Build, test and package
-        if: runner.os != 'Linux'
+      - name: Build and package
         shell: bash
-        run: ./gradlew :composeApp:downloadBundledTools :composeApp:jvmTest :composeApp:${{ matrix.task }} --stacktrace
-
-      - name: Upload test reports on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports-${{ matrix.os }}
-          path: composeApp/build/reports/tests/
-          if-no-files-found: ignore
+        run: ./gradlew :composeApp:downloadBundledTools :composeApp:${{ matrix.task }} --stacktrace
 
       # Only the installer: the same directory tree also holds the unpacked app image.
       - uses: actions/upload-artifact@v4
@@ -70,7 +96,7 @@ jobs:
 
   release:
     name: Release
-    needs: build
+    needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
