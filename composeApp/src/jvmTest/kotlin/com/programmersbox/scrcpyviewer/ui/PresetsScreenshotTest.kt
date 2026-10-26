@@ -45,17 +45,37 @@ class PresetsScreenshotTest {
         canApply = true,
     )
 
-    private fun shot(name: String, mode: ThemeMode, content: @androidx.compose.runtime.Composable () -> Unit) {
+    private fun shot(name: String, mode: ThemeMode, content: @androidx.compose.runtime.Composable () -> Unit) = shot(name, mode, 1280, content)
+
+    private fun shot(name: String, mode: ThemeMode, width: Int, content: @androidx.compose.runtime.Composable () -> Unit) {
         val out = outDir.resolve(name)
-        renderToPng(1280, 800, out) {
+        renderToPng(width, 800, out, settleMillis = 1_000) {
             ScrcpyViewerTheme(mode) { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { content() } }
         }
         assertTrue(Files.size(out) > 10_000, "$name should not be blank")
     }
 
-    private fun screen(state: PresetsUiState) = @androidx.compose.runtime.Composable {
-        PresetsContent(state, {}, { qa }, { _, _, _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {})
+    private fun screen(state: PresetsUiState, listWidthPx: Int? = null, detailOpen: Boolean = false) = @androidx.compose.runtime.Composable {
+        PresetsContent(
+            state, {}, { qa }, { _, _, _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+            panes = screenshotPanes(listWidthPx, detailOpen),
+        )
     }
+
+    @Test
+    fun `presets light wide divider`() = shot("presets-light-divider.png", ThemeMode.Light, content = screen(state, listWidthPx = 300))
+
+    @Test
+    fun `presets dark wide divider`() = shot("presets-dark-divider.png", ThemeMode.Dark, content = screen(state, listWidthPx = 300))
+
+    @Test
+    fun `presets narrow list`() = shot("presets-light-narrow-list.png", ThemeMode.Light, width = 760, content = screen(state))
+
+    @Test
+    fun `presets narrow detail`() = shot("presets-light-narrow-detail.png", ThemeMode.Light, width = 760, content = screen(state, detailOpen = true))
+
+    @Test
+    fun `presets dark narrow detail`() = shot("presets-dark-narrow-detail.png", ThemeMode.Dark, width = 760, content = screen(state, detailOpen = true))
 
     @Test
     fun `presets light`() = shot("presets-light.png", ThemeMode.Light, screen(state))
