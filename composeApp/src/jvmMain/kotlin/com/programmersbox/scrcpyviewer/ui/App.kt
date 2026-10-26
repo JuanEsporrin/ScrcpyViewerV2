@@ -21,15 +21,18 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.AppGraph
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
+import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
+import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavigator
+import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelRoute
+import com.programmersbox.scrcpyviewer.ui.navigation.fadeThrough
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.ui.NavDisplay
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
 import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
@@ -40,11 +43,19 @@ import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
 import kotlinx.coroutines.flow.filter
 import androidx.compose.runtime.LaunchedEffect
 
-private enum class Destination(val label: String, val icon: ImageVector) {
-    Devices("Devices", Icons.Filled.PhoneAndroid),
-    Presets("Presets", Icons.Filled.Tune),
-    Settings("Settings", Icons.Filled.Settings),
-}
+private val TopLevelRoute.label: String
+    get() = when (this) {
+        TopLevelRoute.Devices -> "Devices"
+        TopLevelRoute.Presets -> "Presets"
+        TopLevelRoute.Settings -> "Settings"
+    }
+
+private val TopLevelRoute.icon: ImageVector
+    get() = when (this) {
+        TopLevelRoute.Devices -> Icons.Filled.PhoneAndroid
+        TopLevelRoute.Presets -> Icons.Filled.Tune
+        TopLevelRoute.Settings -> Icons.Filled.Settings
+    }
 
 @Composable
 fun App(graph: AppGraph) {
@@ -60,25 +71,36 @@ fun App(graph: AppGraph) {
     }
     ScrcpyViewerTheme(settings.themeMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            var selected by rememberSaveable { mutableStateOf(Destination.Devices) }
+            val navigator = remember { TopLevelNavigator() }
+            // Hoisted above NavDisplay so each screen's divider position and open pane survive tab switches.
+            val devicesPanes = rememberListDetailPanes()
+            val presetsPanes = rememberListDetailPanes()
             CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
             Row(Modifier.fillMaxSize()) {
                 NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                    Destination.entries.forEach { dest ->
+                    TopLevelRoute.all.forEach { route ->
                         NavigationRailItem(
-                            selected = dest == selected,
-                            onClick = { selected = dest },
-                            icon = { Icon(dest.icon, contentDescription = dest.label) },
-                            label = { Text(dest.label) },
+                            selected = route == navigator.current,
+                            onClick = { navigator.select(route) },
+                            icon = { Icon(route.icon, contentDescription = route.label) },
+                            label = { Text(route.label) },
                         )
                     }
                 }
                 Box(Modifier.fillMaxSize()) {
-                    when (selected) {
-                        Destination.Devices -> DevicesScreen(graph.devicesViewModel)
-                        Destination.Presets -> PresetsScreen(graph.presetsViewModel, fileDialogs)
-                        Destination.Settings -> SettingsScreen(graph.settingsViewModel, settingsDialogs)
-                    }
+                    NavDisplay(
+                        backStack = navigator.backStack,
+                        // Rail destinations are peers; there is no top-level back.
+                        onBack = {},
+                        transitionSpec = fadeThrough(),
+                        popTransitionSpec = fadeThrough(),
+                        predictivePopTransitionSpec = { fadeThrough<TopLevelRoute>()() },
+                        entryProvider = entryProvider {
+                            entry<TopLevelRoute.Devices> { DevicesScreen(graph.devicesViewModel, panes = devicesPanes) }
+                            entry<TopLevelRoute.Presets> { PresetsScreen(graph.presetsViewModel, fileDialogs, panes = presetsPanes) }
+                            entry<TopLevelRoute.Settings> { SettingsScreen(graph.settingsViewModel, settingsDialogs) }
+                        },
+                    )
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
                 }
             }
