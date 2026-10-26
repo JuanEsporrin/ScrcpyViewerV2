@@ -54,7 +54,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
-            packageVersion = "1.1.0"
+            packageVersion = "1.1.1"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS { iconFile.set(project.file("icons/icon.icns")) }
             windows { iconFile.set(project.file("icons/icon.ico")) }
