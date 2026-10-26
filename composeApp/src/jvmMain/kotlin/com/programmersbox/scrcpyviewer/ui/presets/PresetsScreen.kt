@@ -5,12 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +57,10 @@ import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.ui.common.CopyButton
+import com.programmersbox.scrcpyviewer.ui.common.DetailBackButton
+import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
+import com.programmersbox.scrcpyviewer.ui.common.ResizableListDetail
+import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.ui.common.OptionRow
 import com.programmersbox.scrcpyviewer.ui.devices.initialValue
@@ -68,12 +75,17 @@ private val ToolbarPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
 const val APPLY_DISABLED_HINT = "Select a device on the Devices page"
 
 @Composable
-fun PresetsScreen(viewModel: PresetsViewModel, files: PresetFileDialogs, modifier: Modifier = Modifier) {
+fun PresetsScreen(
+    viewModel: PresetsViewModel,
+    files: PresetFileDialogs,
+    modifier: Modifier = Modifier,
+    panes: ListDetailPanes = rememberListDetailPanes(),
+) {
     val state by viewModel.state.collectAsState()
     val import by viewModel.importState.collectAsState()
     val snackbar = LocalSnackbarHostState.current
     LaunchedEffect(viewModel) { viewModel.messages.collect { snackbar?.showSnackbar(it) } }
-    var pasting by remember { mutableStateOf(false) }
+    var pasting by rememberSaveable { mutableStateOf(false) }
 
     /** Runs [block]; shows the failure in the snackbar instead of crashing the UI on a file error. */
     suspend fun reportErrors(block: () -> Unit) {
@@ -107,6 +119,7 @@ fun PresetsScreen(viewModel: PresetsViewModel, files: PresetFileDialogs, modifie
         },
         onImportPaste = { pasting = true },
         modifier = modifier,
+        panes = panes,
     )
     if (pasting) PasteJsonDialog(onDismiss = { pasting = false }, onImport = { pasting = false; viewModel.beginImport(it) })
     import?.let {
@@ -134,41 +147,61 @@ fun PresetsContent(
     onImportFile: () -> Unit,
     onImportPaste: () -> Unit,
     modifier: Modifier = Modifier,
+    panes: ListDetailPanes = rememberListDetailPanes(),
 ) {
-    var editingId by remember { mutableStateOf<String?>(null) }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     Column(modifier.fillMaxSize()) {
         state.persistenceError?.let { ErrorBanner("Presets can't be saved: $it") }
-        Row(Modifier.weight(1f).fillMaxWidth()) {
-            PresetList(
-                state, onSelect = { editingId = null; onSelect(it) },
-                onNew = { editingId = onNew().id }, onExportAll = onExportAll,
-                onImportFile = onImportFile, onImportPaste = onImportPaste,
-            )
-            Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-            val selected = state.selected
-            Box(Modifier.weight(1f).fillMaxHeight()) {
-                when {
-                    selected == null -> Text(
-                        "No presets yet. Create one with + New preset, or import a file.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                    editingId == selected.id -> PresetEditor(
-                        selected,
-                        isNameTaken = { n -> state.presets.any { it.id != selected.id && it.name.equals(n.trim(), ignoreCase = true) } },
-                        onSave = { name, description, values -> onEdit(selected.id, name, description, values); editingId = null },
-                        onCancel = { editingId = null },
-                    )
-                    else -> PresetDetail(
-                        selected, state, onEdit = { editingId = selected.id },
-                        onDuplicate = onDuplicate, onDelete = onDelete, onSetDefault = onSetDefault,
-                        onApply = onApply, onExport = onExport,
-                    )
+        ResizableListDetail(
+            panes = panes,
+            listMinWidth = PRESET_LIST_MIN_WIDTH,
+            listPreferredWidth = PresetListPreferredWidth,
+            detailMinWidth = PRESET_DETAIL_MIN_WIDTH,
+            list = {
+                PresetList(
+                    state, onSelect = { editingId = null; onSelect(it); panes.navigation.openDetail() },
+                    onNew = { editingId = onNew().id; panes.navigation.openDetail() }, onExportAll = onExportAll,
+                    onImportFile = onImportFile, onImportPaste = onImportPaste,
+                )
+            },
+            detail = { onBack ->
+                val selected = state.selected
+                Box(Modifier.fillMaxSize()) {
+                    when {
+                        selected == null -> {
+                            if (onBack != null) DetailBackButton(onBack, Modifier.padding(start = 6.dp, top = 6.dp))
+                            Text(
+                                "No presets yet. Create one with + New preset, or import a file.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.align(Alignment.Center),
+                            )
+                        }
+                        editingId == selected.id -> PresetEditor(
+                            selected,
+                            isNameTaken = { n -> state.presets.any { it.id != selected.id && it.name.equals(n.trim(), ignoreCase = true) } },
+                            onSave = { name, description, values -> onEdit(selected.id, name, description, values); editingId = null },
+                            onCancel = { editingId = null },
+                            onBack = onBack,
+                        )
+                        else -> PresetDetail(
+                            selected, state, onEdit = { editingId = selected.id },
+                            onDuplicate = onDuplicate, onDelete = onDelete, onSetDefault = onSetDefault,
+                            onApply = onApply, onExport = onExport, onBack = onBack,
+                        )
+                    }
                 }
-            }
-        }
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        )
     }
 }
+
+/** Narrowest preset list that still shows a preset row (the toolbar wraps below its width). */
+val PRESET_LIST_MIN_WIDTH = 280.dp
+private val PresetListPreferredWidth = 390.dp
+
+/** Narrowest detail that still fits the action row and the two-column flag grid. */
+val PRESET_DETAIL_MIN_WIDTH = 600.dp
 
 @Composable
 private fun ErrorBanner(text: String) {
@@ -177,6 +210,7 @@ private fun ErrorBanner(text: String) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PresetList(
     state: PresetsUiState,
@@ -187,11 +221,11 @@ private fun PresetList(
     onImportPaste: () -> Unit,
 ) {
     Column(
-        Modifier.width(390.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         var importMenu by remember { mutableStateOf(false) }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Button(onNew, contentPadding = ToolbarPadding) { Text("+ New preset", maxLines = 1) }
             Box {
                 OutlinedButton({ importMenu = true }, contentPadding = ToolbarPadding) { Text("Import") }
@@ -253,16 +287,20 @@ private fun PresetDetail(
     onSetDefault: (String?) -> Unit,
     onApply: (String) -> Unit,
     onExport: (Preset) -> Unit,
+    onBack: (() -> Unit)?,
 ) {
-    var confirmDelete by remember(preset.id) { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable(preset.id) { mutableStateOf(false) }
     val isDefault = preset.id == state.defaultId
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(preset.name, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            Box(Modifier.width(6.dp))
-            if (isDefault) FilterChip(true, { onSetDefault(null) }, label = { Text("Default") })
-            else AssistChip({ onSetDefault(preset.id) }, label = { Text("Set as default") })
-            Box(Modifier.weight(1f))
+            if (onBack != null) DetailBackButton(onBack, Modifier.offset(x = (-8).dp))
+            // Name and chip take the space the actions leave; the name ellipsizes first.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(preset.name, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Box(Modifier.width(10.dp))
+                if (isDefault) FilterChip(true, { onSetDefault(null) }, label = { Text("Default") })
+                else AssistChip({ onSetDefault(preset.id) }, label = { Text("Set as default") })
+            }
             TextButton(onEdit) { Text("Edit") }
             TextButton({ onDuplicate(preset.id) }) { Text("Duplicate") }
             TextButton({ onExport(preset) }) { Text("Export") }
@@ -343,14 +381,22 @@ private fun JsonPanel(json: String) {
 }
 
 @Composable
-private fun PresetEditor(preset: Preset, isNameTaken: (String) -> Boolean, onSave: (String, String, OptionValues) -> Unit, onCancel: () -> Unit) {
-    var name by remember(preset.id) { mutableStateOf(preset.name) }
-    var description by remember(preset.id) { mutableStateOf(preset.description) }
-    var values by remember(preset.id) { mutableStateOf(preset.options) }
+private fun PresetEditor(
+    preset: Preset,
+    isNameTaken: (String) -> Boolean,
+    onSave: (String, String, OptionValues) -> Unit,
+    onCancel: () -> Unit,
+    onBack: (() -> Unit)?,
+) {
+    // Saveable so an unsaved draft survives switching rail tabs.
+    var name by rememberSaveable(preset.id) { mutableStateOf(preset.name) }
+    var description by rememberSaveable(preset.id) { mutableStateOf(preset.description) }
+    var values by rememberSaveable(preset.id) { mutableStateOf(preset.options) }
     val errors = values.validate()
     val nameTaken = isNameTaken(name)
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onBack != null) DetailBackButton(onBack, Modifier.offset(x = (-8).dp))
             Text("Edit preset", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             TextButton(onCancel) { Text("Cancel") }
             Button({ onSave(name, description, values) }, enabled = name.isNotBlank() && !nameTaken && errors.isEmpty()) { Text("Save") }
@@ -382,7 +428,7 @@ private fun PresetEditor(preset: Preset, isNameTaken: (String) -> Boolean, onSav
 
 @Composable
 private fun PasteJsonDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Paste JSON") },

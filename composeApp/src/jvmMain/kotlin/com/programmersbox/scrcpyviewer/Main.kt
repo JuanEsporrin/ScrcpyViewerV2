@@ -54,20 +54,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.nio.file.Path
 import java.nio.file.Paths
 
-/** Dependency holder for the whole app; later tasks add fields. */
-class AppGraph {
+/**
+ * Dependency holder for the whole app. Tests pass their own [dataDir] and an [adbClientFactory]
+ * (given the adb path) so no adb server or device is touched.
+ */
+class AppGraph(
+    private val dataDir: Path = AppDataDir.root(),
+    private val adbClientFactory: (adbPath: () -> Path) -> AdbClient = { AdbClient(adbPath = it) },
+) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val dataDir = AppDataDir.root()
 
     val settings = AppSettings(dataDir.resolve("settings.json"))
     val presetStore = PresetStore(dataDir.resolve("presets.json"), scope)
     val deviceOptions = DeviceOptionsStore(dataDir.resolve("devices.json"), presetStore, scope)
     val bundledTools = BundledTools(dataDir = dataDir)
-    val adbClient = AdbClient(adbPath = {
+    val adbClient = adbClientFactory {
         settings.settings.value.adbPathOverride?.let { Paths.get(it) } ?: bundledTools.adbExecutable()
-    })
+    }
     val deviceTracker = DeviceTracker(adbClient, scope)
 
     /** Serials the user asked to mirror (double-click or Mirror button). Consumed by the mirror window host. */
@@ -87,7 +93,7 @@ class AppGraph {
         settings, presetStore,
         bundledAdb = bundledTools::adbExecutable,
         adbVersion = { path ->
-            val result = AdbClient(adbPath = { path }).exec("version")
+            val result = adbClientFactory { path }.exec("version")
             if (result.exitCode == 0) parseAdbVersion(result.stdout) else null
         },
         restartTracker = deviceTracker::restart,

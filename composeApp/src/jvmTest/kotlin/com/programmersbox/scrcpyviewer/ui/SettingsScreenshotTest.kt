@@ -4,7 +4,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.programmersbox.scrcpyviewer.AppGraph
+import com.programmersbox.scrcpyviewer.fakeAppGraph
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.state.Settings
@@ -55,9 +58,9 @@ class SettingsScreenshotTest {
 
     @Test
     fun `app light with rail`() {
-        val home = Files.createTempDirectory("app-shot")
-        System.setProperty("scrcpyviewer.dataDir", home.toString())
-        val graph = AppGraph()
+        // Fake adb: fixed devices, nothing on this machine is touched.
+        val graph = fakeAppGraph()
+        runBlocking { withTimeout(5_000) { graph.deviceTracker.devices.first { it.size == 3 } } }
         val out = outDir.resolve("app-light.png")
         renderToPng(1280, 800, out) {
             graph.settings.update { it.copy(themeMode = ThemeMode.Light) }

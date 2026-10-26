@@ -45,17 +45,42 @@ class DevicesScreenshotTest {
         hasBasePreset = true,
     )
 
-    private fun render(name: String, mode: ThemeMode, state: DevicesUiState = this.state) {
+    private fun render(
+        name: String,
+        mode: ThemeMode,
+        state: DevicesUiState = this.state,
+        width: Int = 1280,
+        listWidthPx: Int? = null,
+        detailOpen: Boolean = false,
+    ) {
         val out = outDir.resolve(name)
-        renderToPng(1280, 800, out) {
+        renderToPng(width, 800, out, settleMillis = 1_000) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    DevicesContent(state, {}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, {}, {})
+                    DevicesContent(
+                        state, {}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, {}, {},
+                        panes = screenshotPanes(listWidthPx, detailOpen),
+                    )
                 }
             }
         }
         assertTrue(Files.size(out) > 10_000, "$name should not be blank")
     }
+
+    @Test
+    fun `devices light wide divider`() = render("devices-light-divider.png", ThemeMode.Light, listWidthPx = 460)
+
+    @Test
+    fun `devices dark wide divider`() = render("devices-dark-divider.png", ThemeMode.Dark, listWidthPx = 460)
+
+    @Test
+    fun `devices narrow list`() = render("devices-light-narrow-list.png", ThemeMode.Light, width = 760)
+
+    @Test
+    fun `devices narrow detail`() = render("devices-light-narrow-detail.png", ThemeMode.Light, width = 760, detailOpen = true)
+
+    @Test
+    fun `devices dark narrow detail`() = render("devices-dark-narrow-detail.png", ThemeMode.Dark, width = 760, detailOpen = true)
 
     @Test
     fun `devices light`() = render("devices-light.png", ThemeMode.Light)
