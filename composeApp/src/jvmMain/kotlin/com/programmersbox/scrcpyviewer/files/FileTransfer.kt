@@ -94,6 +94,11 @@ sealed interface TransferResult {
 
     /** Nothing was run: the device is not connected. */
     data class Refused(override val message: String) : TransferResult
+
+    /** The device went away mid-queue: [count] queued transfers were dropped without running adb. */
+    data class Cancelled(val count: Int) : TransferResult {
+        override val message get() = "$count transfer${if (count == 1) "" else "s"} cancelled: device disconnected"
+    }
 }
 
 /**
@@ -157,6 +162,19 @@ class FileTransferQueue(
     fun enqueuePaths(paths: List<Path>): Boolean = enqueue(requestsFor(paths))
 
     private suspend fun run(request: TransferRequest) {
+        if (!canTransfer()) {
+            // The device went away: drop this one and everything queued behind it, reported once.
+            val dropped = synchronized(lock) {
+                var n = 1
+                while (queue.tryReceive().isSuccess) n++
+                pending = 0
+                doneInBatch = 0
+                _progress.value = null
+                n
+            }
+            _results.tryEmit(TransferResult.Cancelled(dropped))
+            return
+        }
         val (index, total) = synchronized(lock) {
             pending--
             doneInBatch++
@@ -164,23 +182,19 @@ class FileTransferQueue(
         }
         _progress.value = TransferProgress(request, index, total)
         val result = try {
-            if (!canTransfer()) {
-                TransferResult.Failed(request, "device disconnected")
-            } else {
-                val args = when (request.kind) {
-                    TransferKind.Install -> installArgs(serial, request.path)
-                    TransferKind.Push -> pushArgs(serial, request.path, pushTarget)
-                }
-                val r = adb.execWithTimeout(timeoutMs, *args.toTypedArray())
-                when {
-                    r == null -> TransferResult.Failed(request, "timed out after ${timeoutMs / 60_000} min")
-                    // Old adb versions print "Failure [...]" and still exit 0.
-                    r.exitCode != 0 || FAILURE.containsMatchIn(r.stdout) -> TransferResult.Failed(request, adbErrorLine(r))
-                    request.kind == TransferKind.Install -> TransferResult.Installed(request.name)
-                    else -> {
-                        runCatching { scanFile(pushTarget) }
-                        TransferResult.Pushed(request.name, pushTarget)
-                    }
+            val args = when (request.kind) {
+                TransferKind.Install -> installArgs(serial, request.path)
+                TransferKind.Push -> pushArgs(serial, request.path, pushTarget)
+            }
+            val r = adb.execWithTimeout(timeoutMs, *args.toTypedArray())
+            when {
+                r == null -> TransferResult.Failed(request, "timed out after ${timeoutMs / 60_000} min")
+                // Old adb versions print "Failure [...]" and still exit 0.
+                r.exitCode != 0 || FAILURE.containsMatchIn(r.stdout) -> TransferResult.Failed(request, adbErrorLine(r))
+                request.kind == TransferKind.Install -> TransferResult.Installed(request.name)
+                else -> {
+                    runCatching { scanFile(pushTarget) }
+                    TransferResult.Pushed(request.name, pushTarget)
                 }
             }
         } catch (e: CancellationException) {

@@ -19,20 +19,48 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.Os
+import com.programmersbox.scrcpyviewer.adb.AdbClient
+import com.programmersbox.scrcpyviewer.files.FileTransferQueue
 import com.programmersbox.scrcpyviewer.files.TransferKind
+import com.programmersbox.scrcpyviewer.files.pushTarget
 import com.programmersbox.scrcpyviewer.files.requestsFor
+import com.programmersbox.scrcpyviewer.scrcpy.ControlMessage
+import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
+import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
+import java.awt.Component
+import java.awt.Container
 import java.awt.FileDialog
 import java.awt.Frame
+import java.awt.Window
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetDragEvent
+import java.awt.dnd.DropTargetDropEvent
+import java.awt.dnd.DropTargetEvent
+import java.awt.dnd.DropTargetListener
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import javax.swing.RootPaneContainer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /** Native file pickers for Install APK… and Push file…, behind an interface so tests never open a window. */
 interface TransferFileDialogs {
@@ -70,6 +98,160 @@ fun Transferable.filePaths(): List<Path>? = runCatching {
     if (!isDataFlavorSupported(DataFlavor.javaFileListFlavor)) return null
     (getTransferData(DataFlavor.javaFileListFlavor) as? List<*>)?.filterIsInstance<File>()?.map { it.toPath() }
 }.getOrNull()
+
+/**
+ * The window's install / push state: the queue (null without adb), the drag in progress and the progress label.
+ * Snapshot state is written on the EDT only (AWT drag-and-drop callbacks, effects).
+ */
+@Stable
+class FileTransfers internal constructor(
+    val queue: FileTransferQueue?,
+    val pushTarget: String,
+    private val notify: (String) -> Unit,
+) {
+    /** The session is not Disconnected or Failed. */
+    var connected by mutableStateOf(true)
+        internal set
+
+    /** Files are being dragged over the window. */
+    var dragging by mutableStateOf(false)
+        internal set
+
+    /** The dragged files, or null while the platform does not tell them before the drop. */
+    var dragPaths by mutableStateOf<List<Path>?>(null)
+        internal set
+
+    /** "Installing app.apk…" / "Pushing 2 of 3: photo.jpg…" while the queue runs. */
+    var progressLabel by mutableStateOf<String?>(null)
+        internal set
+
+    /** Install APK… / Push file… can be used and drops are accepted. */
+    val enabled: Boolean get() = queue != null && connected
+
+    /** The overlay to show, or null when nothing is dragged. */
+    val hint: DropHint? get() = if (dragging) dropHint(dragPaths, pushTarget, enabled) else null
+
+    /** Queues [paths]; false when nothing was queued (no adb, device disconnected, empty list). */
+    fun start(paths: List<Path>): Boolean {
+        if (paths.isEmpty()) return false
+        val q = queue
+        if (q == null) {
+            notify("adb is not available")
+            return false
+        }
+        return q.enqueuePaths(paths)
+    }
+}
+
+/**
+ * The install / push queue of [session] (v5.0 `file_pusher.c`): one per session, cancelled (the running adb killed,
+ * the rest dropped) when the window closes or a Reconnect replaces the session. Results go to [notify].
+ */
+@Composable
+fun rememberFileTransfers(serial: String, session: ScrcpySession, adb: AdbClient?, notify: (String) -> Unit): FileTransfers {
+    val currentNotify by rememberUpdatedState(notify)
+    val scope = remember(session) { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
+    DisposableEffect(scope) { onDispose { scope.cancel() } }
+    val transfers = remember(session, adb) {
+        val target = pushTarget(session.values)
+        val queue = adb?.let {
+            FileTransferQueue(
+                serial, it, target,
+                canTransfer = { session.status.value.isConnected() },
+                scanFile = { path -> session.send(ControlMessage.ScanFile(path)) },
+                scope = scope,
+            )
+        }
+        FileTransfers(queue, target) { currentNotify(it) }
+    }
+    LaunchedEffect(transfers) { session.status.collect { transfers.connected = it.isConnected() } }
+    transfers.queue?.let { queue ->
+        LaunchedEffect(queue) { queue.progress.collect { transfers.progressLabel = it?.label } }
+        LaunchedEffect(queue) { queue.results.collect { currentNotify(it.message) } }
+    }
+    return transfers
+}
+
+private fun SessionStatus.isConnected() = this != SessionStatus.Disconnected && this != SessionStatus.Failed
+
+/**
+ * The drop action for a drag offering [sourceActions] (`DnDConstants` bits): always [DnDConstants.ACTION_COPY], so
+ * a source never deletes its files after a drop (Explorer would, after a MOVE); null (reject) when the drag has no
+ * files, the source cannot copy, or transfers are not [enabled].
+ */
+fun copyDropAction(sourceActions: Int, hasFiles: Boolean, enabled: Boolean): Int? =
+    if (hasFiles && enabled && sourceActions and DnDConstants.ACTION_COPY != 0) DnDConstants.ACTION_COPY else null
+
+/** AWT side of the file drop: accepts file lists as COPY only and feeds [transfers]. Runs on the EDT. */
+internal class CopyOnlyFileDropListener(private val transfers: FileTransfers) : DropTargetListener {
+    override fun dragEnter(dtde: DropTargetDragEvent) {
+        if (!dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+            dtde.rejectDrag()
+            return
+        }
+        transfers.dragging = true
+        transfers.dragPaths = dtde.transferable.filePaths()
+        answer(dtde)
+    }
+
+    override fun dragOver(dtde: DropTargetDragEvent) = answer(dtde)
+
+    override fun dropActionChanged(dtde: DropTargetDragEvent) = answer(dtde)
+
+    override fun dragExit(dte: DropTargetEvent) = endDrag()
+
+    override fun drop(dtde: DropTargetDropEvent) {
+        endDrag()
+        val action = copyDropAction(dtde.sourceActions, dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor), transfers.enabled)
+        if (action == null) {
+            dtde.rejectDrop()
+            return
+        }
+        dtde.acceptDrop(action)
+        val paths = dtde.transferable.filePaths()
+        dtde.dropComplete(paths != null && transfers.start(paths))
+    }
+
+    private fun answer(dtde: DropTargetDragEvent) {
+        val action = copyDropAction(dtde.sourceActions, dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor), transfers.enabled)
+        if (action == null) dtde.rejectDrag() else dtde.acceptDrag(action)
+    }
+
+    private fun endDrag() {
+        transfers.dragging = false
+        transfers.dragPaths = null
+    }
+}
+
+/**
+ * Makes [window] a COPY-only drop target for files. Compose's `dragAndDropTarget` accepts the user's drop action
+ * (MOVE by default in Windows Explorer, which then deletes the original), so the AWT [DropTarget] Compose installs
+ * on the window's container is swapped for one with [CopyOnlyFileDropListener] while this is in the composition,
+ * and restored after.
+ */
+@Composable
+fun FileDropTarget(window: Window, transfers: FileTransfers) {
+    DisposableEffect(window, transfers) {
+        val listener = CopyOnlyFileDropListener(transfers)
+        val targets = window.descendants().filter { it.dropTarget != null }
+            .ifEmpty { listOf((window as? RootPaneContainer)?.contentPane ?: window) }
+        val previous = targets.associateWith { it.dropTarget }
+        for (c in targets) c.dropTarget = DropTarget(c, DnDConstants.ACTION_COPY, listener, true)
+        onDispose {
+            for ((c, old) in previous) c.dropTarget = old
+            transfers.dragging = false
+            transfers.dragPaths = null
+        }
+    }
+}
+
+private fun Component.descendants(): List<Component> =
+    if (this is Container) components.flatMap { listOf(it) + it.descendants() } else emptyList()
+
+/** The last shown [DropHint], kept while the overlay fades out (plain field: no snapshot write in composition). */
+class DropHintHolder {
+    var hint: DropHint? = null
+}
 
 /** What a drop of [paths] does, for the overlay shown while dragging. */
 data class DropHint(val label: String, val kind: TransferKind?, val allowed: Boolean)

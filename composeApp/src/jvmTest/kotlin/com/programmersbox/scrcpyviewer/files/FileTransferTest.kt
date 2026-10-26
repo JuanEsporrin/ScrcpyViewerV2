@@ -197,20 +197,29 @@ class FileTransferTest {
     }
 
     @Test
-    fun `queued items fail without adb when the device disconnects mid-queue`() = runBlocking<Unit> {
+    fun `a disconnect mid-queue cancels the rest with one result and no adb`() = runBlocking<Unit> {
         val gate = CompletableDeferred<Unit>()
-        var connected = true
+        val connected = java.util.concurrent.atomic.AtomicBoolean(true)
         val adb = FakeAdb { gate.await(); ProcessResult(0, "", "") }
-        val q = queue(adb, connected = { connected })
+        val q = queue(adb, connected = { connected.get() })
         val results = async(start = CoroutineStart.UNDISPATCHED) { q.results.take(2).toList() }
-        q.enqueue(requestsFor(listOf(Paths.get("/x/a.jpg"), Paths.get("/x/b.jpg")), noDirs))
+        q.enqueue(requestsFor(listOf(Paths.get("/x/a.jpg"), Paths.get("/x/b.jpg"), Paths.get("/x/c.apk")), noDirs))
         withTimeout(5_000) { q.progress.first { it != null } }
-        connected = false
+        connected.set(false)
         gate.complete(Unit)
         val got = withTimeout(5_000) { results.await() }
         assertIs<TransferResult.Pushed>(got[0])
-        assertEquals("Could not push b.jpg: device disconnected", got[1].message)
-        assertEquals(1, adb.calls.size)
+        assertEquals(TransferResult.Cancelled(2), got[1])
+        assertEquals("2 transfers cancelled: device disconnected", got[1].message)
+        assertEquals("1 transfer cancelled: device disconnected", TransferResult.Cancelled(1).message)
+        kotlinx.coroutines.delay(100)
+        assertEquals(1, adb.calls.size) // nothing else ran
+        assertNull(q.progress.value)
+        // The queue still works once the device is back.
+        connected.set(true)
+        val next = async(start = CoroutineStart.UNDISPATCHED) { q.results.first() }
+        q.enqueue(requestsFor(listOf(Paths.get("/x/d.txt")), noDirs))
+        assertEquals(TransferResult.Pushed("d.txt", DEFAULT_PUSH_TARGET), withTimeout(5_000) { next.await() })
     }
 
     @Test

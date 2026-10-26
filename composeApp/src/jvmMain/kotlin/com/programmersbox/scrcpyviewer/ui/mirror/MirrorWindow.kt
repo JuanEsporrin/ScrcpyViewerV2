@@ -1,47 +1,33 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
-import com.programmersbox.scrcpyviewer.AppIcon
-import com.programmersbox.scrcpyviewer.Os
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.text.style.TextOverflow
-import java.awt.datatransfer.StringSelection
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.HorizontalScrollbar
+import androidx.compose.foundation.LocalScrollbarStyle
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.VerticalScrollbar
-import androidx.compose.foundation.LocalScrollbarStyle
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
@@ -51,14 +37,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -69,24 +60,26 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -97,14 +90,17 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -113,19 +109,10 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
+import com.programmersbox.scrcpyviewer.AppIcon
+import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.Device
-import com.programmersbox.scrcpyviewer.files.FileTransferQueue
-import com.programmersbox.scrcpyviewer.files.pushTarget
-import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.ui.draganddrop.DragAndDropEvent
-import androidx.compose.ui.draganddrop.DragAndDropTarget
-import androidx.compose.ui.draganddrop.awtTransferable
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.Screenshot
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
@@ -145,24 +132,24 @@ import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
+import java.awt.KeyEventDispatcher
+import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.awt.event.KeyEvent as AwtKeyEvent
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
+import java.nio.file.Paths
+import javax.swing.SwingUtilities
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.KeyEventDispatcher
-import java.awt.KeyboardFocusManager
-import java.awt.Toolkit
-import java.awt.datatransfer.DataFlavor
-import java.awt.event.WindowAdapter
-import java.awt.event.WindowEvent
-import java.awt.event.KeyEvent as AwtKeyEvent
-import java.nio.file.Paths
-import javax.swing.SwingUtilities
-import kotlin.math.abs
-import kotlin.math.min
-import kotlin.math.roundToInt
 
 /** Side toolbar buttons; [keycode] buttons send that Android key down and up. */
 enum class MirrorAction(val label: String, val keycode: Int? = null) {
@@ -285,7 +272,6 @@ fun parseHexColor(value: String?): Color? {
  * (see [MouseCapture]): the cursor is hidden over the video and moved back to its centre with `java.awt.Robot`,
  * and motion is sent as deltas. Without a working Robot the deltas still flow, until the pointer leaves the video.
  */
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun MirrorWindow(
     serial: String,
@@ -384,33 +370,7 @@ fun MirrorWindow(
         }
     }
 
-    // Install / push queue (v5.0 file_pusher.c): one per session, cancelled (running adb killed) when the window
-    // closes or a Reconnect replaces the session.
-    val pushTarget = remember(values) { pushTarget(values) }
-    val transferScope = remember(session) { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
-    DisposableEffect(transferScope) { onDispose { transferScope.cancel() } }
-    val transfers = remember(session, adb) {
-        adb?.let {
-            FileTransferQueue(
-                serial, it, pushTarget,
-                canTransfer = { session.status.value.let { s -> s != SessionStatus.Disconnected && s != SessionStatus.Failed } },
-                scanFile = { path -> session.send(ControlMessage.ScanFile(path)) },
-                scope = transferScope,
-            )
-        }
-    }
-    val transferProgress = transfers?.progress?.collectAsState()?.value
-    if (transfers != null) {
-        LaunchedEffect(transfers) { transfers.results.collect { notify(it.message) } }
-    }
-    val transferConnected = status != SessionStatus.Disconnected && status != SessionStatus.Failed
-    /** Files dragged over the window (null until the platform tells them), and whether a drag is in progress. */
-    var dragPaths by remember { mutableStateOf<List<java.nio.file.Path>?>(null) }
-    var dragging by remember { mutableStateOf(false) }
-    fun startTransfers(paths: List<java.nio.file.Path>) {
-        if (paths.isEmpty()) return
-        if (transfers == null) notify("adb is not available") else transfers.enqueuePaths(paths)
-    }
+    val transfers = rememberFileTransfers(serial, session, adb, ::notify)
 
     val orientation = remember(values) { DisplayOrientation.forOptions(values) }
     // The window is sized for the image as displayed (turned by display-orientation).
@@ -530,9 +490,9 @@ fun MirrorWindow(
         recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),
         recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
         orientation = orientation,
-        transferEnabled = transfers != null && transferConnected,
-        transferLabel = transferProgress?.label,
-        dropHint = if (dragging) dropHint(dragPaths, pushTarget, connected = transfers != null && transferConnected) else null,
+        transferEnabled = transfers.enabled,
+        transferLabel = transfers.progressLabel,
+        dropHint = transfers.hint,
     )
 
     Window(
@@ -613,35 +573,10 @@ fun MirrorWindow(
             }
         }
 
+        // Drops anywhere on the window install / push (COPY only, see FileDropTarget).
+        FileDropTarget(awtWindow, transfers)
+
         val density = LocalDensity.current
-        val dropTarget = remember {
-            object : DragAndDropTarget {
-                override fun onStarted(event: DragAndDropEvent) {
-                    dragPaths = event.awtTransferable.filePaths()
-                }
-
-                override fun onEntered(event: DragAndDropEvent) {
-                    dragging = true
-                    if (dragPaths == null) dragPaths = event.awtTransferable.filePaths()
-                }
-
-                override fun onExited(event: DragAndDropEvent) {
-                    dragging = false
-                }
-
-                override fun onEnded(event: DragAndDropEvent) {
-                    dragging = false
-                    dragPaths = null
-                }
-
-                override fun onDrop(event: DragAndDropEvent): Boolean {
-                    dragging = false
-                    val paths = event.awtTransferable.filePaths() ?: return false
-                    startTransfers(paths)
-                    return true
-                }
-            }
-        }
 
         var stage by remember { mutableStateOf(IntSize.Zero) }
         var autoSized by remember { mutableStateOf(explicitSize) }
@@ -675,12 +610,7 @@ fun MirrorWindow(
         }
 
         ScrcpyViewerTheme(themeMode) {
-            Box(
-                Modifier.fillMaxSize().dragAndDropTarget(
-                    shouldStartDragAndDrop = { it.awtTransferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor) },
-                    target = dropTarget,
-                ),
-            ) {
+            Box(Modifier.fillMaxSize()) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                     CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
                     MirrorContent(
@@ -692,8 +622,8 @@ fun MirrorWindow(
                             when (action) {
                                 MirrorAction.Screenshot -> takeScreenshot()
                                 MirrorAction.Record -> toggleRecording()
-                                MirrorAction.InstallApk -> startTransfers(fileDialogs.chooseApks(awtWindow))
-                                MirrorAction.PushFile -> startTransfers(fileDialogs.chooseFiles(awtWindow, pushTarget))
+                                MirrorAction.InstallApk -> transfers.start(fileDialogs.chooseApks(awtWindow))
+                                MirrorAction.PushFile -> transfers.start(fileDialogs.chooseFiles(awtWindow, transfers.pushTarget))
                                 else -> send(action.messages())
                             }
                         },
@@ -776,15 +706,16 @@ fun MirrorContent(
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
                 // Keep the last hint while fading out, so the overlay doesn't go blank mid-animation.
-                var lastHint by remember { mutableStateOf(state.dropHint) }
-                if (state.dropHint != null) lastHint = state.dropHint
+                // A plain holder, not snapshot state: writing it during composition invalidates nothing.
+                val lastHint = remember { DropHintHolder() }
+                state.dropHint?.let { lastHint.hint = it }
                 // Fully qualified: the enclosing Row's RowScope.AnimatedVisibility would otherwise win.
                 androidx.compose.animation.AnimatedVisibility(
                     visible = state.dropHint != null,
                     enter = fadeIn(tween(150)),
                     exit = fadeOut(tween(200)),
                 ) {
-                    lastHint?.let { DropOverlay(it) }
+                    lastHint.hint?.let { DropOverlay(it) }
                 }
             }
             SideToolbar(state, onAction)
