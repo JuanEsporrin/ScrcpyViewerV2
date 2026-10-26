@@ -1,44 +1,33 @@
 package com.programmersbox.scrcpyviewer.ui.mirror
 
-import com.programmersbox.scrcpyviewer.AppIcon
-import com.programmersbox.scrcpyviewer.Os
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.text.style.TextOverflow
-import java.awt.datatransfer.StringSelection
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.HorizontalScrollbar
+import androidx.compose.foundation.LocalScrollbarStyle
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.VerticalScrollbar
-import androidx.compose.foundation.LocalScrollbarStyle
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.shape.CircleShape
@@ -48,14 +37,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.CropSquare
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -66,24 +60,26 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -94,14 +90,17 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -110,6 +109,9 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
+import com.programmersbox.scrcpyviewer.AppIcon
+import com.programmersbox.scrcpyviewer.Os
+import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.media.Recorder
 import com.programmersbox.scrcpyviewer.media.Screenshot
@@ -130,24 +132,24 @@ import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
+import java.awt.KeyEventDispatcher
+import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.awt.event.KeyEvent as AwtKeyEvent
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
+import java.nio.file.Paths
+import javax.swing.SwingUtilities
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.KeyEventDispatcher
-import java.awt.KeyboardFocusManager
-import java.awt.Toolkit
-import java.awt.datatransfer.DataFlavor
-import java.awt.event.WindowAdapter
-import java.awt.event.WindowEvent
-import java.awt.event.KeyEvent as AwtKeyEvent
-import java.nio.file.Paths
-import javax.swing.SwingUtilities
-import kotlin.math.abs
-import kotlin.math.min
-import kotlin.math.roundToInt
 
 /** Side toolbar buttons; [keycode] buttons send that Android key down and up. */
 enum class MirrorAction(val label: String, val keycode: Int? = null) {
@@ -160,9 +162,11 @@ enum class MirrorAction(val label: String, val keycode: Int? = null) {
     Power("Power", InputMapper.KEYCODE_POWER),
     Screenshot("Screenshot"),
     Record("Record"),
+    InstallApk("Install APK…"),
+    PushFile("Push file…"),
 }
 
-/** Control messages for a toolbar action; Screenshot and Record send nothing (the window handles them). */
+/** Control messages for a toolbar action; Screenshot, Record, InstallApk and PushFile send nothing (the window handles them). */
 fun MirrorAction.messages(): List<ControlMessage> = when {
     keycode != null -> listOf(
         ControlMessage.InjectKeycode(InputMapper.KEY_ACTION_DOWN, keycode, 0, 0),
@@ -204,6 +208,12 @@ data class MirrorUiState(
     val recordingLabel: String? = null,
     /** `display-orientation`: how the frame is turned on screen. */
     val orientation: DisplayOrientation = DisplayOrientation.R0,
+    /** Install APK… and Push file… can be used (adb available, device connected). */
+    val transferEnabled: Boolean = false,
+    /** "Installing app.apk…" / "Pushing 2 of 3: photo.jpg…" while the install/push queue runs. */
+    val transferLabel: String? = null,
+    /** Set while files are dragged over the window. */
+    val dropHint: DropHint? = null,
 ) {
     val fit: Boolean get() = zoom == null
 }
@@ -270,6 +280,9 @@ fun MirrorWindow(
     themeMode: ThemeMode,
     /** `Settings.captureDir`: where screenshots and recordings started from the toolbar go. */
     captureDir: String,
+    /** Runs `adb install` / `adb push` for dropped files and the Install APK… / Push file… buttons; null disables them. */
+    adb: AdbClient? = null,
+    fileDialogs: TransferFileDialogs = AwtTransferFileDialogs,
 ) {
     val values = session.values
     val e = values.entries
@@ -356,6 +369,8 @@ fun MirrorWindow(
             }
         }
     }
+
+    val transfers = rememberFileTransfers(serial, session, adb, ::notify)
 
     val orientation = remember(values) { DisplayOrientation.forOptions(values) }
     // The window is sized for the image as displayed (turned by display-orientation).
@@ -475,6 +490,9 @@ fun MirrorWindow(
         recordEnabled = !recordStarting && (recording != null || status == SessionStatus.Running),
         recordingLabel = if (recording != null) recordingElapsed ?: recordingLabel(0) else null,
         orientation = orientation,
+        transferEnabled = transfers.enabled,
+        transferLabel = transfers.progressLabel,
+        dropHint = transfers.hint,
     )
 
     Window(
@@ -555,6 +573,9 @@ fun MirrorWindow(
             }
         }
 
+        // Drops anywhere on the window install / push (COPY only, see FileDropTarget).
+        FileDropTarget(awtWindow, transfers)
+
         val density = LocalDensity.current
 
         var stage by remember { mutableStateOf(IntSize.Zero) }
@@ -601,6 +622,8 @@ fun MirrorWindow(
                             when (action) {
                                 MirrorAction.Screenshot -> takeScreenshot()
                                 MirrorAction.Record -> toggleRecording()
+                                MirrorAction.InstallApk -> transfers.start(fileDialogs.chooseApks(awtWindow))
+                                MirrorAction.PushFile -> transfers.start(fileDialogs.chooseFiles(awtWindow, transfers.pushTarget))
                                 else -> send(action.messages())
                             }
                         },
@@ -681,6 +704,18 @@ fun MirrorContent(
                     DisconnectedScrim(state, onReconnect)
                 } else if (state.status == SessionStatus.Connecting || state.frameSize == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                }
+                // Keep the last hint while fading out, so the overlay doesn't go blank mid-animation.
+                // A plain holder, not snapshot state: writing it during composition invalidates nothing.
+                val lastHint = remember { DropHintHolder() }
+                state.dropHint?.let { lastHint.hint = it }
+                // Fully qualified: the enclosing Row's RowScope.AnimatedVisibility would otherwise win.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = state.dropHint != null,
+                    enter = fadeIn(tween(150)),
+                    exit = fadeOut(tween(200)),
+                ) {
+                    lastHint.hint?.let { DropOverlay(it) }
                 }
             }
             SideToolbar(state, onAction)
@@ -985,6 +1020,8 @@ private val toolbarIcons: Map<MirrorAction, ImageVector> = mapOf(
     MirrorAction.Power to Icons.Filled.PowerSettingsNew,
     MirrorAction.Screenshot to Icons.Filled.PhotoCamera,
     MirrorAction.Record to Icons.Filled.FiberManualRecord,
+    MirrorAction.InstallApk to Icons.Filled.Android,
+    MirrorAction.PushFile to Icons.Filled.UploadFile,
 )
 
 @Composable
@@ -999,6 +1036,7 @@ private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) 
             listOf(MirrorAction.Back, MirrorAction.Home, MirrorAction.Recents),
             listOf(MirrorAction.VolumeUp, MirrorAction.VolumeDown, MirrorAction.Rotate, MirrorAction.Power),
             listOf(MirrorAction.Screenshot, MirrorAction.Record),
+            listOf(MirrorAction.InstallApk, MirrorAction.PushFile),
         )
         groups.forEachIndexed { i, group ->
             if (i > 0) HorizontalDivider(Modifier.width(28.dp).padding(vertical = 4.dp), color = colors.outlineVariant)
@@ -1007,6 +1045,7 @@ private fun SideToolbar(state: MirrorUiState, onAction: (MirrorAction) -> Unit) 
                 val enabled = when (action) {
                     MirrorAction.Screenshot -> state.screenshotEnabled
                     MirrorAction.Record -> state.recordEnabled
+                    MirrorAction.InstallApk, MirrorAction.PushFile -> state.transferEnabled
                     else -> state.actionsEnabled
                 }
                 ToolbarButton(
@@ -1052,6 +1091,7 @@ private fun StatusLine(state: MirrorUiState) {
         val showCodec = maxWidth >= 600.dp
         val showMax = maxWidth >= 480.dp
         val showFps = maxWidth >= 300.dp
+        val transferMax = maxWidth * 0.6f
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -1060,6 +1100,13 @@ private fun StatusLine(state: MirrorUiState) {
             val style = MaterialTheme.typography.labelMedium
             state.recordingLabel?.let {
                 Text(it, style = style, color = colors.error, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+            }
+            state.transferLabel?.let {
+                // Measured before the weighted readouts, so the frame size ellipsizes first; capped for long names.
+                Row(Modifier.widthIn(max = transferMax), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+                    Text(it, Modifier.weight(1f, fill = false), style = style, color = colors.primary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
             }
             val fs = state.frameSize
             val size = if (fs == null) "—" else "${fs.width} × ${fs.height}" + (if (showMax) state.maxSize?.let { " shown at $it max" } ?: "" else "")

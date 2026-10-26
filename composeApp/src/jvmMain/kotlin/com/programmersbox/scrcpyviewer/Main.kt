@@ -154,7 +154,7 @@ fun main() {
         }
         for ((serial, session) in mirrors) {
             key(serial) {
-                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.captureDir)
+                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.captureDir, adb = graph.adbClient)
             }
         }
         if (shuttingDown?.finishingRecording == true) FinishingRecordingWindow(settings.themeMode)

@@ -1,0 +1,58 @@
+package com.programmersbox.scrcpyviewer.files
+
+import com.programmersbox.scrcpyviewer.adb.AdbClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * Real-device push (never installs anything); excluded from the default `jvmTest` run. Run with
+ * `./gradlew :composeApp:jvmTest -PdeviceTests --tests '*FileTransferDeviceTest' [-PdeviceSerials=SERIAL]`.
+ * Pushes a tiny text file to /sdcard/Download/ and removes it again with `adb shell rm`.
+ */
+class FileTransferDeviceTest {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val adbPath: Path = System.getenv("PATH").split(java.io.File.pathSeparator)
+        .map { Paths.get(it, "adb") }.first { Files.isExecutable(it) }
+    private val adb = AdbClient(adbPath = { adbPath })
+    private val serial: String = System.getProperty("scrcpyviewer.deviceSerials")?.split(',')?.first() ?: "MBX6P240401889"
+
+    @AfterTest
+    fun tearDown() = scope.cancel()
+
+    @Test
+    fun `push a text file to Download, scan it, and delete it`() = runBlocking<Unit> {
+        val name = "scrcpyviewer-push-test-${System.currentTimeMillis()}.txt"
+        val local = Files.createTempDirectory("push-test").resolve(name)
+        Files.writeString(local, "scrcpy viewer push test\n")
+        val remote = DEFAULT_PUSH_TARGET + name
+        val scans = mutableListOf<String>()
+        val queue = FileTransferQueue(serial, adb, DEFAULT_PUSH_TARGET, { true }, { scans += it }, scope)
+        try {
+            val result = async(start = CoroutineStart.UNDISPATCHED) { queue.results.first() }
+            queue.enqueuePaths(listOf(local))
+            val r = withTimeout(60_000) { result.await() }
+            println("[$serial] ${r.message}")
+            assertEquals(TransferResult.Pushed(name, DEFAULT_PUSH_TARGET), r)
+            assertEquals(listOf(DEFAULT_PUSH_TARGET), scans)
+            assertEquals("scrcpy viewer push test", adb.shell(serial, "cat '$remote'").trim())
+        } finally {
+            adb.exec("-s", serial, "shell", "rm", "-f", remote)
+            Files.deleteIfExists(local)
+        }
+        assertTrue(adb.shell(serial, "ls '$remote' 2>/dev/null").isBlank(), "$remote should be deleted")
+    }
+}
