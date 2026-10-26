@@ -29,7 +29,6 @@ import com.programmersbox.scrcpyviewer.options.OptionType.Text
  * Not listed on purpose:
  * - the hidden options from the global constraints (`--otg`, `-s`, `--list-*`, `--render-driver`, ...);
  * - `--gamepad` (and its alias `-G`): the JVM has no gamepad API, so the mirror window could not forward one;
- * - `--push-target`: there is no drag-and-drop file push (app install / file push is a non-goal);
  * - the short-only aliases `-K` and `-M`, which are `--keyboard=uhid` and `--mouse=uhid` without OTG, and so are
  *   already covered by the [Choice] of those options.
  */
@@ -182,6 +181,9 @@ object OptionCatalog {
             "Disable automatic clipboard synchronization between the computer and the device.") {
             listOf("clipboard_autosync" to "false")
         },
+        // Client: file_pusher.c passes it as is to `adb push` for dropped non-APK files.
+        client("push-target", "Push target", Control, Text,
+            "Target directory for files pushed by drag & drop or Push file. Passed as is to \"adb push\". Default is /sdcard/Download/."),
 
         // ---- Device ----
         server("stay-awake", "Stay awake", Device, Flag,

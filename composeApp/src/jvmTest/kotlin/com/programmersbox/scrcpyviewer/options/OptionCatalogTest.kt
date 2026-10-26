@@ -9,8 +9,7 @@ import kotlin.test.assertTrue
 
 class OptionCatalogTest {
     /**
-     * Hidden options from Global Constraints, without leading dashes, plus `gamepad` (the JVM has no gamepad API)
-     * and `push-target` (no drag-and-drop file push: a non-goal).
+     * Hidden options from Global Constraints, without leading dashes, plus `gamepad` (the JVM has no gamepad API).
      */
     private val hidden = listOf(
         "otg", "serial", "s", "d", "e", "select-usb", "select-tcpip", "tcpip",
@@ -18,7 +17,7 @@ class OptionCatalogTest {
         "h", "help", "v", "version", "V", "verbosity",
         "v4l2-sink", "v4l2-buffer", "render-driver", "no-mipmaps", "hwdec", "shortcut-mod",
         "pause-on-exit", "no-window", "window-borderless", "disable-screensaver",
-        "no-terminal-title", "kill-adb-on-close", "gamepad", "push-target",
+        "no-terminal-title", "kill-adb-on-close", "gamepad",
     )
 
     /** Every `.longopt` in scrcpy v5.0 app/src/cli.c, in table order. */
@@ -104,6 +103,13 @@ class OptionCatalogTest {
     @Test
     fun `turn-screen-off is a client option`() {
         assertEquals(Target.Client, OptionCatalog.byFlag("turn-screen-off")?.target)
+    }
+
+    @Test
+    fun `push-target is a client text option`() {
+        val spec = assertNotNull(OptionCatalog.byFlag("push-target"))
+        assertEquals(Target.Client, spec.target)
+        assertEquals(OptionType.Text, spec.type)
     }
 
     @Test

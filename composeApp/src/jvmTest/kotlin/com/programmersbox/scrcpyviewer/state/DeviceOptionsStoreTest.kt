@@ -151,7 +151,7 @@ class DeviceOptionsStoreTest {
 
     @Test
     fun `a stored option the catalog no longer has is dropped on load`() {
-        Files.writeString(file, """{"S1": {"values": {"push-target": "/sdcard/", "max-size": "800"}, "basePresetId": null}}""")
+        Files.writeString(file, """{"S1": {"values": {"gamepad": "uhid", "max-size": "800"}, "basePresetId": null}}""")
         assertEquals(OptionValues(mapOf("max-size" to "800")), store().workingSet("S1").value.values)
     }
 }
