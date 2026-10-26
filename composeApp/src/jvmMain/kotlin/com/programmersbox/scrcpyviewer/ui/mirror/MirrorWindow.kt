@@ -2,6 +2,9 @@ package com.programmersbox.scrcpyviewer.ui.mirror
 
 import com.programmersbox.scrcpyviewer.AppIcon
 import com.programmersbox.scrcpyviewer.Os
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -772,7 +775,17 @@ fun MirrorContent(
                 } else if (state.status == SessionStatus.Connecting || state.frameSize == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
-                state.dropHint?.let { DropOverlay(it) }
+                // Keep the last hint while fading out, so the overlay doesn't go blank mid-animation.
+                var lastHint by remember { mutableStateOf(state.dropHint) }
+                if (state.dropHint != null) lastHint = state.dropHint
+                // Fully qualified: the enclosing Row's RowScope.AnimatedVisibility would otherwise win.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = state.dropHint != null,
+                    enter = fadeIn(tween(150)),
+                    exit = fadeOut(tween(200)),
+                ) {
+                    lastHint?.let { DropOverlay(it) }
+                }
             }
             SideToolbar(state, onAction)
         }
