@@ -10,9 +10,17 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.FrameWindowScope
@@ -39,12 +47,14 @@ import org.jetbrains.jewel.ui.component.styling.IconButtonMetrics
 import org.jetbrains.jewel.ui.component.styling.IconButtonStyle
 import org.jetbrains.jewel.window.DecoratedWindow
 import org.jetbrains.jewel.window.TitleBar
+import org.jetbrains.jewel.window.TitleBarScope
 import org.jetbrains.jewel.window.styling.DecoratedWindowColors
 import org.jetbrains.jewel.window.styling.DecoratedWindowStyle
 import org.jetbrains.jewel.window.styling.TitleBarColors
 import org.jetbrains.jewel.window.styling.TitleBarMetrics
 import org.jetbrains.jewel.window.styling.TitleBarStyle
 import org.jetbrains.jewel.window.utils.clientRegion
+import kotlin.math.roundToInt
 
 /** What a title-bar slot can use: the window's [chrome], and [interactive] for clickable parts of the bar. */
 interface AppTitleBarScope {
@@ -72,7 +82,9 @@ private object SystemTitleBarScope : AppTitleBarScope {
  * painted from the Material scheme) or the OS one ([WindowChrome.System], plain [Window]). The
  * [titleBar] slot is laid out inside the custom bar (start-aligned after the window controls on
  * macOS / Windows, centred on Linux), or above [content] in System mode — render nothing there if
- * the window wants no extra strip. Only pass [WindowChrome.Custom] on JetBrains Runtime (see [windowChrome]).
+ * the window wants no extra strip. The slot is as wide as its content, up to the room between the
+ * window controls, so a `fillMaxWidth` child spans exactly that. [titleBarHeight] is the custom bar's
+ * height. Only pass [WindowChrome.Custom] on JetBrains Runtime (see [windowChrome]).
  */
 @Composable
 fun AppWindow(
@@ -84,6 +96,7 @@ fun AppWindow(
     visible: Boolean = true,
     alwaysOnTop: Boolean = false,
     icon: Painter? = AppIcon.painter,
+    titleBarHeight: Dp = 38.dp,
     titleBar: @Composable AppTitleBarScope.() -> Unit,
     content: @Composable FrameWindowScope.() -> Unit,
 ) {
@@ -112,7 +125,7 @@ fun AppWindow(
                 theme = if (dark) JewelTheme.darkThemeDefinition() else JewelTheme.lightThemeDefinition(),
                 styling = ComponentStyling.default().decoratedWindow(
                     windowStyle = decoratedWindowStyle(bar, dark),
-                    titleBarStyle = titleBarStyle(bar, dark),
+                    titleBarStyle = titleBarStyle(bar, dark, titleBarHeight),
                 ),
             ) {
                 // Jewel's theme replaces LocalIndication; give the window Material's locals back.
@@ -126,10 +139,7 @@ fun AppWindow(
                         alwaysOnTop = alwaysOnTop,
                     ) {
                         TitleBar { _ ->
-                            Row(
-                                Modifier.align(if (Os.isLinux) Alignment.CenterHorizontally else Alignment.Start),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                            BoundedSlot {
                                 CompositionLocalProvider(LocalContentColor provides bar.content) {
                                     CustomTitleBarScope.titleBar()
                                 }
@@ -143,6 +153,39 @@ fun AppWindow(
     }
 }
 
+/**
+ * The title-bar slot, at most as wide as the room between the window controls. Jewel measures the bar's
+ * children against its full width and only then adds the macOS traffic-light / Windows button insets, so a
+ * full-width child would run past the right edge (under the buttons on Windows). Jewel keeps those insets
+ * private: they are read back from where it places the slot (start) and a zero-width end marker (end), and
+ * the slot is narrowed by them from the next layout on. On Linux there are no insets: the pane buttons are
+ * children measured before the slot, so its constraints already leave them out.
+ */
+@Composable
+private fun TitleBarScope.BoundedSlot(content: @Composable () -> Unit) {
+    var startInset by remember { mutableIntStateOf(0) }
+    var endInset by remember { mutableIntStateOf(0) }
+    Row(
+        Modifier
+            .align(if (Os.isLinux) Alignment.CenterHorizontally else Alignment.Start)
+            .then(if (Os.isLinux) Modifier else Modifier.onPlaced { startInset = it.positionInParent().x.roundToInt() })
+            .layout { measurable, constraints ->
+                val maxWidth = (constraints.maxWidth - startInset - endInset).coerceAtLeast(0)
+                val placeable = measurable.measure(constraints.copy(minWidth = 0, maxWidth = maxWidth))
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) { content() }
+    if (!Os.isLinux) {
+        Box(
+            Modifier.align(Alignment.End).onPlaced {
+                val barWidth = it.parentLayoutCoordinates?.size?.width ?: return@onPlaced
+                endInset = barWidth - it.positionInParent().x.roundToInt()
+            },
+        )
+    }
+}
+
 /** Linux frame border (the only place Jewel draws one; macOS / Windows keep the native frame). */
 private fun decoratedWindowStyle(bar: BarColors, dark: Boolean): DecoratedWindowStyle {
     val colors = DecoratedWindowColors(border = bar.border, borderInactive = bar.border)
@@ -150,7 +193,7 @@ private fun decoratedWindowStyle(bar: BarColors, dark: Boolean): DecoratedWindow
 }
 
 @Composable
-private fun titleBarStyle(bar: BarColors, dark: Boolean): TitleBarStyle {
+private fun titleBarStyle(bar: BarColors, dark: Boolean, height: Dp): TitleBarStyle {
     val hover = bar.content.copy(alpha = 0.08f)
     val pressed = bar.content.copy(alpha = 0.12f)
     val colors = TitleBarColors(
@@ -170,7 +213,7 @@ private fun titleBarStyle(bar: BarColors, dark: Boolean): TitleBarStyle {
         dropdownHoveredBackground = hover,
         dropdownPressedBackground = pressed,
     )
-    val metrics = TitleBarMetrics.defaults(height = 38.dp, titlePaneButtonSize = DpSize(32.dp, 32.dp))
+    val metrics = TitleBarMetrics.defaults(height = height, titlePaneButtonSize = DpSize(32.dp, 32.dp))
     val base = if (dark) TitleBarStyle.dark(colors, metrics) else TitleBarStyle.lightWithLightHeader(colors, metrics)
     // Pane buttons are only drawn by Jewel on Linux (macOS / Windows use the native ones): make them round.
     return TitleBarStyle(
