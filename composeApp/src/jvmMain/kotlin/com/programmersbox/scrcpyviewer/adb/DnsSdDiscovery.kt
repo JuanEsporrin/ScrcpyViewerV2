@@ -81,17 +81,28 @@ class DnsSdDiscovery(private val run: DnsSdRunner = ::runDnsSd) {
 }
 
 private suspend fun runDnsSd(args: List<String>, timeoutMs: Long, stopWhen: (List<String>) -> Boolean): List<String> =
+    runLines(listOf("dns-sd") + args, timeoutMs, stopWhen)
+
+/** Runs [command], collecting output lines until [stopWhen], [timeoutMs] or cancellation; the process is always killed. */
+internal suspend fun runLines(command: List<String>, timeoutMs: Long, stopWhen: (List<String>) -> Boolean): List<String> =
     withContext(Dispatchers.IO) {
         val process = try {
-            ProcessBuilder(listOf("dns-sd") + args).redirectErrorStream(true).start()
+            ProcessBuilder(command).redirectErrorStream(true).start()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             return@withContext emptyList()
         }
         val lines = ArrayList<String>()
-        // Destroying the process closes its output, which ends the read loop below.
-        val killer = launch { delay(timeoutMs); process.destroy() }
+        // Destroying the process closes its output, which ends the blocking read loop below. It must also happen when
+        // this call is cancelled: the read cannot be interrupted, so otherwise the thread and the process leak.
+        val killer = launch {
+            try {
+                delay(timeoutMs)
+            } finally {
+                process.destroy()
+            }
+        }
         try {
             process.inputStream.bufferedReader().useLines { seq ->
                 for (line in seq) {

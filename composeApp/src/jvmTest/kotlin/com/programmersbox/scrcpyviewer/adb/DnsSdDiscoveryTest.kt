@@ -1,6 +1,11 @@
 package com.programmersbox.scrcpyviewer.adb
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -66,6 +71,22 @@ class DnsSdDiscoveryTest {
             }
         }
         assertEquals(listOf(MdnsService("adb-R5CX12GDWPZ-tKl7wT", MdnsType.Pairing, "10.0.28.169:41877")), discovery.services())
+    }
+
+    @Test
+    fun `cancelling a run kills the process`() = runBlocking {
+        com.programmersbox.scrcpyviewer.assumePosix()
+        // A process that prints nothing and never exits, like dns-sd waiting for answers.
+        val job = launch(Dispatchers.Default) { runLines(listOf("sleep", "30"), timeoutMs = 60_000) { false } }
+        delay(300)
+        withTimeout(2_000) { job.cancelAndJoin() }
+    }
+
+    @Test
+    fun `a run stops at its timeout`() = runBlocking {
+        com.programmersbox.scrcpyviewer.assumePosix()
+        val lines = withTimeout(3_000) { runLines(listOf("sh", "-c", "echo first; sleep 30"), timeoutMs = 300) { false } }
+        assertEquals(listOf("first"), lines)
     }
 
     @Test
