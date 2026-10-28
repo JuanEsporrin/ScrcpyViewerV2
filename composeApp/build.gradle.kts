@@ -73,15 +73,27 @@ kotlin {
     }
 }
 
+// Run / packaging tasks (run, runDistributable, hot-reload runs, package*, create*Distributable, *RuntimeImage,
+// suggestRuntimeModules, prepareAppResources), matched on the requested names with any ":project:" prefix dropped.
+val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested ->
+    val name = requested.substringAfterLast(':')
+    listOf("run", "package", "Distributable", "RuntimeImage", "suggestRuntimeModules", "prepareAppResources")
+        .any { name.contains(it, ignoreCase = true) }
+}
+
 compose.desktop {
     application {
         mainClass = "com.programmersbox.scrcpyviewer.MainKt"
         // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
         // so the app runs on JBR 25; Gradle auto-provisions it via foojay. Compilation stays on jvmToolchain(21).
-        javaHome = javaToolchains.launcherFor {
-            languageVersion.set(JavaLanguageVersion.of(25))
-            vendor.set(JvmVendorSpec.JETBRAINS)
-        }.get().metadata.installationPath.asFile.absolutePath
+        // javaHome is a plain String, so resolve JBR 25 only when a run or packaging task is requested; tests,
+        // CI test jobs and IDE sync then never download it.
+        if (needsAppRuntime) {
+            javaHome = javaToolchains.launcherFor {
+                languageVersion.set(JavaLanguageVersion.of(25))
+                vendor.set(JvmVendorSpec.JETBRAINS)
+            }.get().metadata.installationPath.asFile.absolutePath
+        }
         // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
         nativeDistributions {
