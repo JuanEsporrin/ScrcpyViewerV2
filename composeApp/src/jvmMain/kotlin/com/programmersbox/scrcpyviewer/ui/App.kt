@@ -94,7 +94,7 @@ fun App(
                 Box(Modifier.fillMaxSize()) {
                     TopLevelNavDisplay(navigator) { route ->
                         when (route) {
-                            TopLevelRoute.Devices -> DevicesScreen(graph.devicesViewModel, panes = devicesPanes)
+                            TopLevelRoute.Devices -> DevicesScreen(graph.devicesViewModel, graph.wirelessAdb, panes = devicesPanes)
                             TopLevelRoute.Presets -> PresetsScreen(graph.presetsViewModel, fileDialogs, panes = presetsPanes)
                             TopLevelRoute.Settings -> SettingsScreen(graph.settingsViewModel, settingsDialogs)
                         }

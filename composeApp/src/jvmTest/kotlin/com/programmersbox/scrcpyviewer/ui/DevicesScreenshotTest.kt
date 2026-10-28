@@ -13,6 +13,19 @@ import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesContent
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesUiState
+import com.programmersbox.scrcpyviewer.ui.devices.PairingTab
+import com.programmersbox.scrcpyviewer.ui.devices.DeviceMenu
+import com.programmersbox.scrcpyviewer.ui.devices.RowActions
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
+import com.programmersbox.scrcpyviewer.ui.devices.WifiPairingActions
+import com.programmersbox.scrcpyviewer.ui.devices.WifiPairingDialog
+import com.programmersbox.scrcpyviewer.ui.devices.WifiPairingState
+import com.programmersbox.scrcpyviewer.adb.MdnsService
+import com.programmersbox.scrcpyviewer.adb.MdnsType
+import com.programmersbox.scrcpyviewer.adb.WirelessParsers
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import java.nio.file.Files
@@ -123,4 +136,79 @@ class DevicesScreenshotTest {
         }
         assertTrue(Files.size(out) > 10_000)
     }
+
+    /** Popups do not render offscreen, so the menu's items are drawn on a menu-like surface instead. */
+    private fun renderMenu(name: String, mode: ThemeMode, serial: String, state: DevicesUiState = this.state) {
+        val out = outDir.resolve(name)
+        val device = state.devices.first { it.serial == serial }
+        val actions = RowActions(onOpen = {}, onConnectWifi = {}, onDisconnect = {}, canMirror = { it == "39121FDJH004AB" })
+        renderToPng(400, 200, out, settleMillis = 500) {
+            ScrcpyViewerTheme(mode) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    Surface(
+                        Modifier.padding(24.dp).width(260.dp),
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shadowElevation = 3.dp,
+                    ) {
+                        Column(Modifier.padding(vertical = 8.dp)) { DeviceMenu(device, state, actions, onDismiss = {}) }
+                    }
+                }
+            }
+        }
+        assertTrue(Files.size(out) > 3_000, "$name should not be blank")
+    }
+
+    @Test
+    fun `devices context menu usb`() = renderMenu("devices-light-menu-usb.png", ThemeMode.Light, "39121FDJH004AB")
+
+    @Test
+    fun `devices context menu usb switching dark`() =
+        renderMenu("devices-dark-menu-switching.png", ThemeMode.Dark, "39121FDJH004AB", state.copy(switching = setOf("39121FDJH004AB")))
+
+    @Test
+    fun `devices context menu wifi`() =
+        renderMenu("devices-light-menu-wifi.png", ThemeMode.Light, "adb-R5CT90ABCDE-xK2fPq._adb-tls-connect._tcp")
+
+    private val pairing = WifiPairingState(
+        qrName = "scrcpy-viewer-7QK2ab",
+        qrPassword = "9Xc4mT28aa",
+        qrPayload = WirelessParsers.qrPayload("scrcpy-viewer-7QK2ab", "9Xc4mT28aa"),
+        pairingServices = listOf(
+            MdnsService("adb-3A111FDJG0029S-AbCdEf", MdnsType.Pairing, "192.168.1.31:41877"),
+            MdnsService("adb-27KX1A2B3C-QwErTy", MdnsType.Pairing, "192.168.1.52:38211"),
+        ),
+        chosen = "192.168.1.31:41877",
+        code = "482",
+        ip = "192.168.1.31",
+        pairPort = "41877",
+        pairCode = "482913",
+    )
+
+    private fun renderDialog(name: String, mode: ThemeMode, state: WifiPairingState) {
+        val out = outDir.resolve(name)
+        renderToPng(1280, 800, out, settleMillis = 1_000) {
+            ScrcpyViewerTheme(mode) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    WifiPairingDialog(state, WifiPairingActions(), onDismiss = {})
+                }
+            }
+        }
+        assertTrue(Files.size(out) > 10_000, "$name should not be blank")
+    }
+
+    @Test
+    fun `wifi pairing dialog qr`() = renderDialog("wifi-light-qr.png", ThemeMode.Light, pairing)
+
+    @Test
+    fun `wifi pairing dialog qr dark`() = renderDialog("wifi-dark-qr.png", ThemeMode.Dark, pairing)
+
+    @Test
+    fun `wifi pairing dialog code`() = renderDialog("wifi-light-code.png", ThemeMode.Light, pairing.copy(tab = PairingTab.Code))
+
+    @Test
+    fun `wifi pairing dialog ip`() = renderDialog(
+        "wifi-dark-ip.png", ThemeMode.Dark,
+        pairing.copy(tab = PairingTab.Ip, error = "Wrong pairing code. Check the code on the phone and try again."),
+    )
 }

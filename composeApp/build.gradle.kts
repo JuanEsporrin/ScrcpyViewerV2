@@ -35,6 +35,7 @@ kotlin {
             implementation(libs.androidx.navigation3.ui)
             implementation(libs.material3.adaptive)
             implementation(libs.material3.adaptive.layout)
+            implementation(libs.qrose)
             val ffmpeg = libs.versions.ffmpeg.get()
             val javacpp = libs.versions.javacpp.get()
             implementation("org.bytedeco:ffmpeg:$ffmpeg")
