@@ -96,6 +96,8 @@ compose.desktop {
         }
         // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        // It also warns when javacpp's indexers call the terminally deprecated sun.misc.Unsafe memory methods.
+        jvmArgs += "--sun-misc-unsafe-memory-access=allow"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
