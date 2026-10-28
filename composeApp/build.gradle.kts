@@ -36,6 +36,7 @@ kotlin {
             implementation(libs.material3.adaptive)
             implementation(libs.material3.adaptive.layout)
             implementation(libs.qrose)
+            implementation(libs.jewel.decorated.window)
             val ffmpeg = libs.versions.ffmpeg.get()
             val javacpp = libs.versions.javacpp.get()
             implementation("org.bytedeco:ffmpeg:$ffmpeg")
@@ -52,9 +53,15 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "com.programmersbox.scrcpyviewer.MainKt"
+        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime; Gradle auto-provisions it via foojay.
+        javaHome = javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+            vendor.set(JvmVendorSpec.JETBRAINS)
+        }.get().metadata.installationPath.asFile.absolutePath
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
+            modules("java.instrument", "java.management", "jdk.unsupported")
             packageVersion = "1.2.0"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS {
