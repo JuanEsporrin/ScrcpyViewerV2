@@ -85,8 +85,16 @@ class DnsSdDiscoveryTest {
     @Test
     fun `a run stops at its timeout`() = runBlocking {
         com.programmersbox.scrcpyviewer.assumePosix()
-        val lines = withTimeout(3_000) { runLines(listOf("sh", "-c", "echo first; sleep 30"), timeoutMs = 300) { false } }
+        // `; true` keeps sh from exec-ing sleep, so sleep is a child process holding the output pipe open. On Linux
+        // the read only ends once that child is gone, so the timeout has to kill the whole process tree.
+        val lines = withTimeout(3_000) { runLines(listOf("sh", "-c", "echo first; sleep 37; true"), timeoutMs = 300) { false } }
         assertEquals(listOf("first"), lines)
+        delay(200)
+        val leftover = ProcessHandle.allProcesses().filter { p ->
+            p.info().command().orElse("").endsWith("sleep") && p.info().arguments().orElse(emptyArray()).contentEquals(arrayOf("37"))
+        }.toList()
+        leftover.forEach { it.destroy() }
+        assertEquals(emptyList(), leftover.map { it.pid() }, "the child sleep should be killed with its shell")
     }
 
     @Test
