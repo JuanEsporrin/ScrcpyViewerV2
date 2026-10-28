@@ -57,7 +57,7 @@ class DeviceTrackerTest {
         override suspend fun startServer() { startServerCalls.incrementAndGet() }
         override suspend fun shell(serial: String, cmd: String): String {
             shellCalls.incrementAndGet()
-            return "Pixel 8 Pro\n15\n35\n"
+            return "Pixel 8 Pro\n15\n35\n39121FDJH004AB\n"
         }
     }
 
@@ -115,7 +115,7 @@ class DeviceTrackerTest {
         val tracker = DeviceTracker(client, scope)
         withTimeout(5000) {
             val withInfo = tracker.devices.first { it.firstOrNull()?.info != null && it.size == 2 }
-            assertEquals(DeviceInfo("Pixel 8 Pro", "15", 35), withInfo.first().info)
+            assertEquals(DeviceInfo("Pixel 8 Pro", "15", 35, "39121FDJH004AB"), withInfo.first().info)
         }
         Thread.sleep(200)
         assertEquals(1, client.shellCalls.get())

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 
-private const val INFO_COMMAND = "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk"
+private const val INFO_COMMAND = "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk; getprop ro.serialno"
 
 /** Keeps [devices] in sync with the adb server's `host:track-devices-l` stream and reconnects with backoff. */
 class DeviceTracker(
@@ -125,6 +125,11 @@ class DeviceTracker(
     private fun parseInfo(output: String): DeviceInfo? {
         val lines = output.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size < 3) return null
-        return DeviceInfo(model = lines[0], androidVersion = lines[1], sdk = lines[2].toIntOrNull() ?: return null)
+        return DeviceInfo(
+            model = lines[0],
+            androidVersion = lines[1],
+            sdk = lines[2].toIntOrNull() ?: return null,
+            serialNo = lines.getOrNull(3),
+        )
     }
 }
