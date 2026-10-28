@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.adb
 
+import com.programmersbox.scrcpyviewer.Os
 import kotlin.random.Random
 
 enum class MdnsType { Pairing, Connect }
@@ -50,6 +51,17 @@ object WirelessParsers {
         val i = line.lastIndexOf(": ")
         return AdbOutcome.Failed(if (i >= 0) line.substring(i + 2) else line)
     }
+
+    /**
+     * macOS reports "No route to host" when Local Network privacy blocks the adb server this app started, even though
+     * the network is fine; add where to allow it.
+     */
+    fun withLocalNetworkHint(message: String, mac: Boolean = Os.isMac): String =
+        if (mac && "No route to host" in message) {
+            "$message. Allow Local Network access for this app in System Settings › Privacy & Security › Local Network."
+        } else {
+            message
+        }
 
     /** The IPv4 address in `ip -f inet addr show wlan0` output, or null when the interface has none. */
     fun wlanAddress(ipAddrOutput: String): String? = inet.find(ipAddrOutput)?.groupValues?.get(1)

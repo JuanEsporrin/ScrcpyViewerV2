@@ -57,7 +57,22 @@ compose.desktop {
             packageName = "ScrcpyViewer"
             packageVersion = "1.2.0"
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
-            macOS { iconFile.set(project.file("icons/icon.icns")) }
+            macOS {
+                iconFile.set(project.file("icons/icon.icns"))
+                // Without these, macOS Local Network privacy silently blocks the bundled adb server from reaching
+                // phones over Wi-Fi ("No route to host") and from discovering them through mDNS.
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>NSLocalNetworkUsageDescription</key>
+                        <string>Scrcpy Viewer connects to Android devices on your network for wireless debugging.</string>
+                        <key>NSBonjourServices</key>
+                        <array>
+                            <string>_adb-tls-pairing._tcp</string>
+                            <string>_adb-tls-connect._tcp</string>
+                        </array>
+                    """.trimIndent()
+                }
+            }
             windows { iconFile.set(project.file("icons/icon.ico")) }
             // Debian package names must be lowercase.
             linux {

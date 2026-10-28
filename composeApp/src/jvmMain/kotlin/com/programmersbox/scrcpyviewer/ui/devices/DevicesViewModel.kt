@@ -5,6 +5,7 @@ import com.programmersbox.scrcpyviewer.adb.AdbOutcome
 import com.programmersbox.scrcpyviewer.adb.DeviceState
 import com.programmersbox.scrcpyviewer.adb.SwitchResult
 import com.programmersbox.scrcpyviewer.adb.WirelessAdb
+import com.programmersbox.scrcpyviewer.adb.WirelessParsers
 import com.programmersbox.scrcpyviewer.adb.optionsKey
 import com.programmersbox.scrcpyviewer.options.CommandLine
 import com.programmersbox.scrcpyviewer.options.OptionCatalog
@@ -220,7 +221,8 @@ class DevicesViewModel(
                     is SwitchResult.Connected -> WifiNotice("$name connected at ${result.address}", result.address)
                     SwitchResult.NotOnWifi -> WifiNotice("$name isn't on Wi-Fi. Connect it to the same network as this computer.")
                     is SwitchResult.TcpipFailed -> WifiNotice("Couldn't switch $name to Wi-Fi: ${result.message}")
-                    is SwitchResult.ConnectFailed -> WifiNotice("Couldn't connect to ${result.address}: ${result.message}")
+                    is SwitchResult.ConnectFailed ->
+                        WifiNotice("Couldn't connect to ${result.address}: ${WirelessParsers.withLocalNetworkHint(result.message)}")
                 }
                 _notices.emit(notice)
             } finally {

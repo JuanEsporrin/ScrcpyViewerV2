@@ -59,6 +59,16 @@ class WirelessParsersTest {
     }
 
     @Test
+    fun `no route to host on mac points to local network permission`() {
+        assertEquals(
+            "No route to host. Allow Local Network access for this app in System Settings › Privacy & Security › Local Network.",
+            WirelessParsers.withLocalNetworkHint("No route to host", mac = true),
+        )
+        assertEquals("No route to host", WirelessParsers.withLocalNetworkHint("No route to host", mac = false))
+        assertEquals("Connection refused", WirelessParsers.withLocalNetworkHint("Connection refused", mac = true))
+    }
+
+    @Test
     fun `wlan address`() {
         val out = "30: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n" +
             "    inet 192.168.1.31/24 brd 192.168.1.255 scope global wlan0\n"

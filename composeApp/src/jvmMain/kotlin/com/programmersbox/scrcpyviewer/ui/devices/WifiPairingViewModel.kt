@@ -189,7 +189,8 @@ class WifiPairingViewModel(
         else -> "Couldn't pair: ${message(outcome)}"
     }
 
-    private fun message(outcome: AdbOutcome): String = (outcome as? AdbOutcome.Failed)?.message ?: outcome.toString()
+    private fun message(outcome: AdbOutcome): String =
+        WirelessParsers.withLocalNetworkHint((outcome as? AdbOutcome.Failed)?.message ?: outcome.toString())
 
     /** The serial in an `adb-<serial>-<suffix>` service name, else [fallback]. */
     private fun label(serviceName: String, fallback: String): String =
