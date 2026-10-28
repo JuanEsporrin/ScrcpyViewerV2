@@ -14,6 +14,8 @@ data class Settings(
     val adbPathOverride: String? = null,
     /** Resolved when absent from the file: `~/Movies/ScrcpyViewer` on macOS, `~/Videos/ScrcpyViewer` elsewhere. */
     val captureDir: String = defaultCaptureDir(),
+    /** Whether new windows use the OS title bar; null = OS default. */
+    val useSystemTitleBar: Boolean? = null,
 )
 
 internal fun defaultCaptureDir(): String {

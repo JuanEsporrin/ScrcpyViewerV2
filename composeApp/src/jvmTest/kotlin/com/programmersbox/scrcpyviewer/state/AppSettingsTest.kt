@@ -34,4 +34,16 @@ class AppSettingsTest {
         assertEquals(ThemeMode.Light, s.themeMode)
         assertEquals(defaultCaptureDir(), s.captureDir)
     }
+
+    @Test
+    fun `useSystemTitleBar absent from older file loads as null`() {
+        Files.writeString(file, """{"themeMode":"Light"}""")
+        assertNull(AppSettings(file).settings.value.useSystemTitleBar)
+    }
+
+    @Test
+    fun `useSystemTitleBar persists`() {
+        AppSettings(file).update { it.copy(useSystemTitleBar = true) }
+        assertEquals(true, AppSettings(file).settings.value.useSystemTitleBar)
+    }
 }
