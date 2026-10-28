@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -37,7 +38,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
-import com.programmersbox.scrcpyviewer.ui.window.defaultUseSystemTitleBar
+import com.programmersbox.scrcpyviewer.ui.window.WindowChrome
+import com.programmersbox.scrcpyviewer.ui.window.windowChrome
 import java.nio.file.Paths
 
 @Composable
@@ -68,6 +70,7 @@ fun SettingsContent(
     onBrowseCaptureDir: () -> Unit,
     modifier: Modifier = Modifier,
     isLinux: Boolean = Os.isLinux,
+    customTitleBarSupported: Boolean = com.programmersbox.scrcpyviewer.ui.window.customTitleBarSupported,
 ) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp)) {
         Column(Modifier.widthIn(max = 720.dp), verticalArrangement = Arrangement.spacedBy(28.dp)) {
@@ -91,11 +94,24 @@ fun SettingsContent(
                     }
                 }
             }
-            val systemTitleBar = state.settings.useSystemTitleBar ?: defaultUseSystemTitleBar(isLinux)
+            // Shows what windows will get: always the system bar when the runtime can't draw the custom one.
+            val systemTitleBar = windowChrome(state.settings.useSystemTitleBar, isLinux, customTitleBarSupported) == WindowChrome.System
             Section("Window", "Applies to windows opened after the change. Restart to apply it to this window.") {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Switch(checked = systemTitleBar, onCheckedChange = onUseSystemTitleBar)
+                Row(
+                    Modifier.toggleable(
+                        value = systemTitleBar, enabled = customTitleBarSupported, role = Role.Switch,
+                        onValueChange = onUseSystemTitleBar,
+                    ),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Switch(checked = systemTitleBar, onCheckedChange = null, enabled = customTitleBarSupported)
                     Text("Use system title bar")
+                }
+                if (!customTitleBarSupported) {
+                    Text(
+                        "Custom title bar isn't available on this Java runtime.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 if (isLinux && !systemTitleBar) {
                     Text(
