@@ -53,11 +53,14 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "com.programmersbox.scrcpyviewer.MainKt"
-        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime; Gradle auto-provisions it via foojay.
+        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
+        // so the app runs on JBR 25; Gradle auto-provisions it via foojay. Compilation stays on jvmToolchain(21).
         javaHome = javaToolchains.launcherFor {
-            languageVersion.set(JavaLanguageVersion.of(21))
+            languageVersion.set(JavaLanguageVersion.of(25))
             vendor.set(JvmVendorSpec.JETBRAINS)
         }.get().metadata.installationPath.asFile.absolutePath
+        // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
+        jvmArgs += "--enable-native-access=ALL-UNNAMED"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
