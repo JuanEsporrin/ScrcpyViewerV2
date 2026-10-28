@@ -16,6 +16,7 @@ import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -64,7 +65,16 @@ data class DevicesUiState(
  * A snackbar message from a Wi-Fi action; [mirrorSerial] adds a Mirror action for that device. [mdnsName] is the
  * phone's connect service, for when adb lists it as `<mdnsName>._adb-tls-connect._tcp` instead of [mirrorSerial].
  */
-data class WifiNotice(val text: String, val mirrorSerial: String? = null, val mdnsName: String? = null)
+data class WifiNotice(
+    val text: String,
+    val mirrorSerial: String? = null,
+    val mdnsName: String? = null,
+    /** Adds a "Restart adb" action: the adb server was started by another app and macOS is blocking it. */
+    val restartAdb: Boolean = false,
+)
+
+/** Why a restart can help, shown when the app may not restart adb by itself (mirror windows are open). */
+const val RESTART_ADB_HINT = "adb was started by another app, so macOS blocks it. Restarting adb closes open mirror windows."
 
 private data class Selection(
     val devices: List<Device>,
@@ -221,8 +231,11 @@ class DevicesViewModel(
                     is SwitchResult.Connected -> WifiNotice("$name connected at ${result.address}", result.address)
                     SwitchResult.NotOnWifi -> WifiNotice("$name isn't on Wi-Fi. Connect it to the same network as this computer.")
                     is SwitchResult.TcpipFailed -> WifiNotice("Couldn't switch $name to Wi-Fi: ${result.message}")
-                    is SwitchResult.ConnectFailed ->
+                    is SwitchResult.ConnectFailed -> if (result.restartCanFix) {
+                        WifiNotice("Couldn't connect to ${result.address}: ${result.message}. $RESTART_ADB_HINT", restartAdb = true)
+                    } else {
                         WifiNotice("Couldn't connect to ${result.address}: ${WirelessParsers.withLocalNetworkHint(result.message)}")
+                    }
                 }
                 _notices.emit(notice)
             } finally {
@@ -249,6 +262,21 @@ class DevicesViewModel(
             ?: notice.mirrorSerial
             ?: return
         openDevice(serial)
+    }
+
+    /** The "Restart adb" action: restarts the adb server so this app owns it, then says to try again. */
+    fun restartAdb() {
+        scope.launch {
+            val text = try {
+                wireless.restartServer()
+                "Restarted adb. Try connecting again."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "Couldn't restart adb: ${e.message}"
+            }
+            _notices.emit(WifiNotice(text))
+        }
     }
 
     fun notify(notice: WifiNotice) {

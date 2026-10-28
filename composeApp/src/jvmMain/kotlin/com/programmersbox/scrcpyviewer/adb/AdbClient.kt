@@ -29,9 +29,25 @@ open class AdbClient(
     /** Socket read timeout of [shell]: a hung device fails the call instead of blocking it forever. */
     private val shellReadTimeoutMs: Int = 10_000,
 ) {
+    @Volatile
+    private var started = false
+
+    /**
+     * True once this client started the adb server daemon itself (rather than reusing one already running). On macOS
+     * the daemon gets the Local Network permission of whichever app started it, so a reused one may be blocked.
+     */
+    open val startedServer: Boolean get() = started
+
     open suspend fun startServer() {
         val result = runAdb(listOf("start-server"), startServerTimeoutMs)
         if (result.exitCode != 0) throw IOException("adb start-server failed (${result.exitCode}): ${result.stderr.trim()}")
+        if ("daemon started successfully" in result.stdout + result.stderr) started = true
+    }
+
+    /** Stops the running adb server and starts a new one owned by this app. Drops every adb connection. */
+    open suspend fun restartServer() {
+        runAdb(listOf("kill-server"), startServerTimeoutMs)
+        startServer()
     }
 
     /**

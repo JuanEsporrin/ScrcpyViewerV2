@@ -5,6 +5,7 @@ import com.programmersbox.scrcpyviewer.adb.MdnsService
 import com.programmersbox.scrcpyviewer.adb.MdnsType
 import com.programmersbox.scrcpyviewer.adb.WirelessAdb
 import com.programmersbox.scrcpyviewer.adb.WirelessParsers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +40,8 @@ data class WifiPairingState(
     val portError: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
+    /** Shows a "Restart adb" button: macOS blocks the adb server another app started (see [WifiPairingViewModel.restartAdb]). */
+    val canRestartAdb: Boolean = false,
 ) {
     val primaryLabel: String get() = if (tab == PairingTab.Ip) "Connect" else "Pair"
 
@@ -125,6 +128,22 @@ class WifiPairingViewModel(
         }
     }
 
+    /** The dialog's "Restart adb" button: restarts the adb server so this app owns it; the user then tries again. */
+    fun restartAdb() {
+        vmScope.launch {
+            _state.update { it.copy(busy = true, canRestartAdb = false) }
+            val error = try {
+                wireless.restartServer()
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "Couldn't restart adb: ${e.message}"
+            }
+            _state.update { it.copy(busy = false, error = error) }
+        }
+    }
+
     /** Cancels polling and any pair or connect in progress. */
     fun close() = vmScope.cancel()
 
@@ -143,11 +162,11 @@ class WifiPairingViewModel(
             busy(true)
             if (s.pairPort.isNotEmpty() && s.pairCode.isNotEmpty()) {
                 val paired = wireless.pair("${s.ip}:${s.pairPort}", s.pairCode)
-                if (paired != AdbOutcome.Ok) return@launch fail(pairError(paired))
+                if (paired != AdbOutcome.Ok) return@launch fail(pairError(paired), paired)
             }
             when (val connected = wireless.connect(address)) {
                 AdbOutcome.Ok -> succeed(WifiNotice("$address connected over Wi-Fi", address))
-                else -> fail("Couldn't connect: ${message(connected)}")
+                else -> fail("Couldn't connect: ${message(connected)}", connected)
             }
         }
     }
@@ -155,7 +174,7 @@ class WifiPairingViewModel(
     private suspend fun pairAndConnect(service: MdnsService, code: String) {
         busy(true)
         val paired = wireless.pair(service.address, code)
-        if (paired != AdbOutcome.Ok) return fail(pairError(paired))
+        if (paired != AdbOutcome.Ok) return fail(pairError(paired), paired)
         // adb usually connects by itself once the phone advertises its connect service; connecting again is harmless.
         val connectService = withTimeoutOrNull(connectWaitMs) {
             var found: MdnsService? = null
@@ -171,13 +190,17 @@ class WifiPairingViewModel(
                 val name = label(connectService.name, connectService.address)
                 succeed(WifiNotice("$name connected over Wi-Fi", connectService.address, mdnsName = connectService.name))
             }
-            else -> fail("Couldn't connect: ${message(connected)}")
+            else -> fail("Couldn't connect: ${message(connected)}", connected)
         }
     }
 
-    private fun busy(value: Boolean) = _state.update { it.copy(busy = value, error = if (value) null else it.error) }
+    private fun busy(value: Boolean) =
+        _state.update { it.copy(busy = value, error = if (value) null else it.error, canRestartAdb = if (value) false else it.canRestartAdb) }
 
-    private fun fail(error: String) = _state.update { it.copy(busy = false, error = error) }
+    private fun fail(error: String, outcome: AdbOutcome? = null) {
+        val restart = (outcome as? AdbOutcome.Failed)?.restartCanFix == true
+        _state.update { it.copy(busy = false, error = error, canRestartAdb = restart) }
+    }
 
     private fun succeed(notice: WifiNotice) {
         _state.update { it.copy(busy = false) }
@@ -189,8 +212,10 @@ class WifiPairingViewModel(
         else -> "Couldn't pair: ${message(outcome)}"
     }
 
-    private fun message(outcome: AdbOutcome): String =
-        WirelessParsers.withLocalNetworkHint((outcome as? AdbOutcome.Failed)?.message ?: outcome.toString())
+    private fun message(outcome: AdbOutcome): String {
+        val failed = outcome as? AdbOutcome.Failed ?: return outcome.toString()
+        return if (failed.restartCanFix) "${failed.message}. $RESTART_ADB_HINT" else WirelessParsers.withLocalNetworkHint(failed.message)
+    }
 
     /** The serial in an `adb-<serial>-<suffix>` service name, else [fallback]. */
     private fun label(serviceName: String, fallback: String): String =

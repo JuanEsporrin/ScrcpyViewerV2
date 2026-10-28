@@ -101,10 +101,16 @@ fun DevicesScreen(
             val host = snackbar ?: return@collect
             val result = host.showSnackbar(
                 notice.text,
-                actionLabel = notice.mirrorSerial?.let { "Mirror" },
-                duration = if (notice.mirrorSerial != null) SnackbarDuration.Long else SnackbarDuration.Short,
+                actionLabel = when {
+                    notice.restartAdb -> "Restart adb"
+                    notice.mirrorSerial != null -> "Mirror"
+                    else -> null
+                },
+                duration = if (notice.restartAdb || notice.mirrorSerial != null) SnackbarDuration.Long else SnackbarDuration.Short,
             )
-            if (result == SnackbarResult.ActionPerformed) viewModel.mirrorFromNotice(notice)
+            if (result == SnackbarResult.ActionPerformed) {
+                if (notice.restartAdb) viewModel.restartAdb() else viewModel.mirrorFromNotice(notice)
+            }
         }
     }
     if (pairing) {
