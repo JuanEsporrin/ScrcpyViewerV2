@@ -37,7 +37,7 @@ class SettingsScreenshotTest {
         renderToPng(1280, 800, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    SettingsContent(state.copy(settings = state.settings.copy(themeMode = mode)), {}, {}, {}, {}, {}, {})
+                    SettingsContent(state.copy(settings = state.settings.copy(themeMode = mode)), {}, {}, {}, {}, {}, {}, {})
                 }
             }
         }

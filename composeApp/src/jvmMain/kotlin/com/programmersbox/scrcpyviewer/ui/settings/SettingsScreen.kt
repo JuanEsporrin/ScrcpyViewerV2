@@ -23,6 +23,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -34,7 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import com.programmersbox.scrcpyviewer.ui.window.defaultUseSystemTitleBar
 import java.nio.file.Paths
 
 @Composable
@@ -43,6 +46,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, files: SettingsFileDialogs, mod
     SettingsContent(
         state = state,
         onTheme = viewModel::setTheme,
+        onUseSystemTitleBar = viewModel::setUseSystemTitleBar,
         onDefaultPreset = viewModel::setDefaultPreset,
         onUseBundledAdb = viewModel::useBundledAdb,
         onUseCustomAdb = viewModel::useCustomAdb,
@@ -56,12 +60,14 @@ fun SettingsScreen(viewModel: SettingsViewModel, files: SettingsFileDialogs, mod
 fun SettingsContent(
     state: SettingsUiState,
     onTheme: (ThemeMode) -> Unit,
+    onUseSystemTitleBar: (Boolean) -> Unit,
     onDefaultPreset: (String?) -> Unit,
     onUseBundledAdb: () -> Unit,
     onUseCustomAdb: (String) -> Unit,
     onBrowseAdb: () -> Unit,
     onBrowseCaptureDir: () -> Unit,
     modifier: Modifier = Modifier,
+    isLinux: Boolean = Os.isLinux,
 ) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp)) {
         Column(Modifier.widthIn(max = 720.dp), verticalArrangement = Arrangement.spacedBy(28.dp)) {
@@ -83,6 +89,19 @@ fun SettingsContent(
                             shape = SegmentedButtonDefaults.itemShape(i, ThemeMode.entries.size),
                         ) { Text(mode.name) }
                     }
+                }
+            }
+            val systemTitleBar = state.settings.useSystemTitleBar ?: defaultUseSystemTitleBar(isLinux)
+            Section("Window", "Applies to windows opened after the change. Restart to apply it to this window.") {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Switch(checked = systemTitleBar, onCheckedChange = onUseSystemTitleBar)
+                    Text("Use system title bar")
+                }
+                if (isLinux && !systemTitleBar) {
+                    Text(
+                        "Window can't be resized from its edges.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             AdbSection(state, onUseBundledAdb, onUseCustomAdb, onBrowseAdb)
