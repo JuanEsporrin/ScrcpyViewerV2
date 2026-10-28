@@ -9,23 +9,33 @@ enum class WindowChrome { Custom, System }
 fun defaultUseSystemTitleBar(isLinux: Boolean = Os.isLinux): Boolean = isLinux
 
 /**
- * Picks the title bar for a window. The custom bar needs JetBrains Runtime, so it is always
- * system when [jbr] is false, whatever the setting says.
+ * Picks the title bar for a window. The custom bar needs a runtime that can load Jewel, so it is
+ * always system when [supported] is false, whatever the setting says.
  */
 fun windowChrome(
     useSystemTitleBar: Boolean?,
     isLinux: Boolean = Os.isLinux,
-    jbr: Boolean = isJbr(),
+    supported: Boolean = customTitleBarSupported,
 ): WindowChrome {
-    if (!jbr) return WindowChrome.System
+    if (!supported) return WindowChrome.System
     val useSystem = useSystemTitleBar ?: defaultUseSystemTitleBar(isLinux)
     return if (useSystem) WindowChrome.System else WindowChrome.Custom
 }
 
+/** Jewel 0.41 is Java 25 bytecode and its decorated window needs JetBrains Runtime. */
+internal fun jewelUsable(jbrAvailable: Boolean, javaFeature: Int): Boolean = jbrAvailable && javaFeature >= 25
+
 /**
- * True when running on JetBrains Runtime; false if the JBR API is missing or throws. Reflection
- * because jbr-api is only on the runtime classpath (via skiko), not the compile classpath.
+ * True when this runtime can draw the custom title bar: JetBrains Runtime 25 or newer, and Jewel's
+ * window class loads. False on a stock JDK, on JBR 21 (an IDE run on the compile toolchain), or if
+ * anything throws. Reflection because jbr-api is only on the runtime classpath (via skiko), not the
+ * compile classpath. Checked once per process.
  */
-fun isJbr(): Boolean = runCatching {
-    Class.forName("com.jetbrains.JBR").getMethod("isAvailable").invoke(null) as Boolean
-}.getOrDefault(false)
+val customTitleBarSupported: Boolean by lazy {
+    runCatching {
+        val jbr = Class.forName("com.jetbrains.JBR").getMethod("isAvailable").invoke(null) as Boolean
+        // Loading without initialising still verifies the class file version.
+        jewelUsable(jbr, Runtime.version().feature()) &&
+            Class.forName("org.jetbrains.jewel.window.DecoratedWindowKt", false, WindowChrome::class.java.classLoader) != null
+    }.getOrDefault(false)
+}
