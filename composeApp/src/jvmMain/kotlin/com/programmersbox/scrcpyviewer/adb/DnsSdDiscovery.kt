@@ -100,7 +100,7 @@ internal suspend fun runLines(command: List<String>, timeoutMs: Long, stopWhen: 
             try {
                 delay(timeoutMs)
             } finally {
-                process.destroy()
+                destroyTree(process)
             }
         }
         try {
@@ -114,7 +114,16 @@ internal suspend fun runLines(command: List<String>, timeoutMs: Long, stopWhen: 
             // stream closed by the timeout
         } finally {
             killer.cancel()
-            process.destroy()
+            destroyTree(process)
         }
         lines
     }
+
+/**
+ * Kills [process] and its children. Children are listed first: once the parent dies they are re-parented and no
+ * longer its descendants. On Linux a surviving child keeps the output pipe open, so the read would not end.
+ */
+private fun destroyTree(process: Process) {
+    process.descendants().forEach { it.destroy() }
+    process.destroy()
+}
