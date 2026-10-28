@@ -30,6 +30,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
@@ -64,11 +65,12 @@ data class WifiPairingActions(
     val setPairPort: (String) -> Unit = {},
     val setPairCode: (String) -> Unit = {},
     val submit: () -> Unit = {},
+    val restartAdb: () -> Unit = {},
 )
 
 fun WifiPairingViewModel.actions() = WifiPairingActions(
     selectTab = ::selectTab, choose = ::choose, setCode = ::setCode, setIp = ::setIp, setPort = ::setPort,
-    setPairPort = ::setPairPort, setPairCode = ::setPairCode, submit = ::submit,
+    setPairPort = ::setPairPort, setPairCode = ::setPairCode, submit = ::submit, restartAdb = ::restartAdb,
 )
 
 private val PairingTabLabels = mapOf(PairingTab.Qr to "QR code", PairingTab.Code to "Pairing code", PairingTab.Ip to "IP address")
@@ -110,6 +112,9 @@ fun WifiPairingDialog(state: WifiPairingState, actions: WifiPairingActions, onDi
                     }
                 }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+                if (state.canRestartAdb) {
+                    OutlinedButton(onClick = actions.restartAdb) { Text("Restart adb") }
+                }
             }
         },
         confirmButton = {

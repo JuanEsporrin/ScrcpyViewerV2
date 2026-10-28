@@ -87,6 +87,67 @@ class WirelessAdbTest {
         )
     }
 
+    /** Fails connects with "No route to host" until the server is restarted; [ours] says who started the server. */
+    private class BlockedServerClient(private var ours: Boolean) : AdbClient({ error("unused") as Path }) {
+        val calls = mutableListOf<String>()
+        override val startedServer: Boolean get() = ours
+        override suspend fun restartServer() {
+            calls += "restart"
+            ours = true
+        }
+        override suspend fun exec(vararg args: String): ProcessResult {
+            calls += args.joinToString(" ")
+            return if (ours && "restart" in calls) ProcessResult(0, "connected to ${args.last()}\n", "")
+            else ProcessResult(0, "failed to connect to '${args.last()}': No route to host\n", "")
+        }
+    }
+
+    @Test
+    fun `connect restarts a server this app did not start when it is blocked`() = runBlocking {
+        val client = BlockedServerClient(ours = false)
+        val wireless = WirelessAdb(client, mac = true, canRestartServer = { true })
+        assertEquals(AdbOutcome.Ok, wireless.connect("10.0.24.47:5555"))
+        assertEquals(listOf("connect 10.0.24.47:5555", "restart", "connect 10.0.24.47:5555"), client.calls)
+    }
+
+    @Test
+    fun `connect does not restart the app's own server`() = runBlocking {
+        val client = BlockedServerClient(ours = true)
+        val wireless = WirelessAdb(client, mac = true, canRestartServer = { true })
+        assertEquals(AdbOutcome.Failed("No route to host"), wireless.connect("10.0.24.47:5555"))
+        assertEquals(listOf("connect 10.0.24.47:5555"), client.calls)
+    }
+
+    @Test
+    fun `connect asks for a restart while mirrors are open`() = runBlocking {
+        val client = BlockedServerClient(ours = false)
+        val wireless = WirelessAdb(client, mac = true, canRestartServer = { false })
+        assertEquals(AdbOutcome.Failed("No route to host", restartCanFix = true), wireless.connect("10.0.24.47:5555"))
+        assertEquals(listOf("connect 10.0.24.47:5555"), client.calls)
+    }
+
+    @Test
+    fun `connect never restarts off macOS`() = runBlocking {
+        val client = BlockedServerClient(ours = false)
+        val wireless = WirelessAdb(client, mac = false, canRestartServer = { true })
+        assertEquals(AdbOutcome.Failed("No route to host"), wireless.connect("10.0.24.47:5555"))
+    }
+
+    @Test
+    fun `pair restarts a blocked server on a status message fault`() = runBlocking {
+        var restarted = false
+        val client = object : AdbClient({ error("unused") as Path }) {
+            override val startedServer: Boolean get() = restarted
+            override suspend fun restartServer() { restarted = true }
+            override suspend fun exec(vararg args: String): ProcessResult =
+                if (restarted) ProcessResult(0, "Successfully paired to ${args[1]} [guid=adb-X-Y]\n", "")
+                else ProcessResult(1, "", "error: protocol fault (couldn't read status message): Undefined error: 0\n")
+        }
+        val wireless = WirelessAdb(client, mac = true, canRestartServer = { true })
+        assertEquals(AdbOutcome.Ok, wireless.pair("10.0.24.47:41877", "482913"))
+        assertEquals(true, restarted)
+    }
+
     @Test
     fun `mdnsServices swallows failures`() = runBlocking {
         val client = FakeClient { throw IOException("boom") }

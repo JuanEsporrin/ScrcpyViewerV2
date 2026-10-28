@@ -52,6 +52,27 @@ class AdbClientTest {
     }
 
     @Test
+    fun `startServer records whether it started the daemon`() = runBlocking {
+        val reused = AdbClient({ stub("exit 0") })
+        reused.startServer()
+        assertEquals(false, reused.startedServer)
+        val started = AdbClient({ stub("echo '* daemon not running; starting now at tcp:5037' >&2\necho '* daemon started successfully' >&2") })
+        started.startServer()
+        assertEquals(true, started.startedServer)
+    }
+
+    @Test
+    fun `restartServer kills then starts the daemon`(): Unit = runBlocking {
+        val log = Files.createTempFile("adb-calls", ".txt")
+        val adb = stub("echo \"\$1\" >> '$log'\n[ \"\$1\" = start-server ] && echo '* daemon started successfully' >&2\nexit 0")
+        val client = AdbClient({ adb })
+        client.restartServer()
+        assertEquals(listOf("kill-server", "start-server"), Files.readAllLines(log))
+        assertEquals(true, client.startedServer)
+        Files.deleteIfExists(log)
+    }
+
+    @Test
     fun `startServer is bounded when adb hangs`() = runBlocking {
         val adb = stub("exec sleep 5")
         val start = System.nanoTime()
