@@ -66,8 +66,21 @@ class DnsSdDiscoveryTest {
             }
         }
         assertEquals(listOf(MdnsService("adb-R5CX12GDWPZ-tKl7wT", MdnsType.Pairing, "10.0.28.169:41877")), discovery.services())
-        // A second poll reuses the resolved address while the phone is still advertised.
-        discovery.services()
-        assertEquals(1, calls.count { it[0] == "-L" })
+    }
+
+    @Test
+    fun `each poll resolves again because the pairing port changes under the same name`() = runBlocking {
+        var port = 41877
+        val discovery = DnsSdDiscovery { args, _, _ ->
+            when {
+                args[0] == "-B" && args[1] == "_adb-tls-pairing._tcp" -> browse
+                args[0] == "-B" -> emptyList()
+                args[0] == "-L" -> lookup.map { it.replace(":41877", ":$port") }
+                else -> address
+            }
+        }
+        assertEquals("10.0.28.169:41877", discovery.services().single().address)
+        port = 39001 // the phone reopened its pairing popup: same service name, new port
+        assertEquals("10.0.28.169:39001", discovery.services().single().address)
     }
 }

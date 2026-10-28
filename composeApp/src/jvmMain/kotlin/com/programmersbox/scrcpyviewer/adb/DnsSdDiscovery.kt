@@ -53,19 +53,15 @@ typealias DnsSdRunner = suspend (args: List<String>, timeoutMs: Long, stopWhen: 
 class DnsSdDiscovery(private val run: DnsSdRunner = ::runDnsSd) {
     private val types = listOf("_adb-tls-pairing._tcp" to MdnsType.Pairing, "_adb-tls-connect._tcp" to MdnsType.Connect)
 
-    // Resolved addresses by (name, type); entries drop out once a browse no longer lists the name.
-    private val resolved = HashMap<Pair<String, MdnsType>, MdnsService>()
-
+    /**
+     * Browses both adb service types, then resolves every name found. Nothing is cached: a phone keeps its service
+     * name but gets a new pairing port each time its pairing popup opens.
+     */
     suspend fun services(): List<MdnsService> = coroutineScope {
-        val browsed = types.map { (type, kind) -> async { run(listOf("-B", type, "local."), BROWSE_MS) { false }.let(DnsSdParsers::browseNames).map { it to (type to kind) } } }
-            .awaitAll().flatten()
-        synchronized(resolved) { resolved.keys.retainAll(browsed.map { (name, t) -> name to t.second }.toSet()) }
-        browsed.map { (name, t) ->
-            async {
-                synchronized(resolved) { resolved[name to t.second] } ?: resolve(name, t.first, t.second)
-                    ?.also { synchronized(resolved) { resolved[name to t.second] = it } }
-            }
-        }.awaitAll().filterNotNull()
+        val browsed = types.map { (type, kind) ->
+            async { DnsSdParsers.browseNames(run(listOf("-B", type, "local."), BROWSE_MS) { false }).map { Triple(it, type, kind) } }
+        }.awaitAll().flatten()
+        browsed.map { (name, type, kind) -> async { resolve(name, type, kind) } }.awaitAll().filterNotNull()
     }
 
     private suspend fun resolve(name: String, type: String, kind: MdnsType): MdnsService? {
