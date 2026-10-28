@@ -1,5 +1,12 @@
 package com.programmersbox.scrcpyviewer.ui.devices
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,11 +90,23 @@ fun WifiPairingDialog(state: WifiPairingState, actions: WifiPairingActions, onDi
                         )
                     }
                 }
-                Column(Modifier.heightIn(min = 250.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    when (state.tab) {
-                        PairingTab.Qr -> QrTab(state)
-                        PairingTab.Code -> CodeTab(state, actions)
-                        PairingTab.Ip -> IpTab(state, actions)
+                AnimatedContent(
+                    targetState = state.tab,
+                    transitionSpec = {
+                        // Slide toward the tab that was picked: right-hand tabs enter from the right.
+                        val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                        (slideInHorizontally { width -> direction * width } + fadeIn()) togetherWith
+                            (slideOutHorizontally { width -> -direction * width } + fadeOut()) using
+                            SizeTransform(clip = true)
+                    },
+                    label = "pairing tab",
+                ) { tab ->
+                    Column(Modifier.fillMaxWidth().heightIn(min = 250.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        when (tab) {
+                            PairingTab.Qr -> QrTab(state)
+                            PairingTab.Code -> CodeTab(state, actions)
+                            PairingTab.Ip -> IpTab(state, actions)
+                        }
                     }
                 }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
