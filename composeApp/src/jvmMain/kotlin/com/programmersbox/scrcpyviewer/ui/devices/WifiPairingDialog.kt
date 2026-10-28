@@ -51,6 +51,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.programmersbox.scrcpyviewer.adb.MdnsService
 import com.programmersbox.scrcpyviewer.adb.WirelessParsers
 import io.github.alexzhirkevich.qrose.rememberQrCodePainter
@@ -80,6 +81,9 @@ private val PairingTabLabels = mapOf(PairingTab.Qr to "QR code", PairingTab.Code
 fun WifiPairingDialog(state: WifiPairingState, actions: WifiPairingActions, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnClickOutside = false,
+        ),
         title = { Text("Pair device over Wi-Fi") },
         text = {
             Column(Modifier.width(500.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
