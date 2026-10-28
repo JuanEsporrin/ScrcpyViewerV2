@@ -11,7 +11,7 @@ plugins {
 }
 
 // Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
-val appVersion = "1.3.0"
+val appVersion = "1.3.1"
 
 val generateAppVersion = tasks.register("generateAppVersion") {
     val version = appVersion
@@ -70,6 +70,15 @@ kotlin {
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
         }
+    }
+}
+
+// Jewel's icon libraries pull in IntelliJ's coroutines fork, a different module with the same classes but missing newer
+// methods (Job.cancel$default). Both jars shipped and the fork won, crashing on cancel; use the one real coroutines.
+configurations.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-jvm"))
+            .using(module("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:${libs.versions.coroutines.get()}"))
     }
 }
 
