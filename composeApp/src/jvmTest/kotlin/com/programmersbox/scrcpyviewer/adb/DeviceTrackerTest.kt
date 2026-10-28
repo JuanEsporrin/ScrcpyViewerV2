@@ -57,7 +57,7 @@ class DeviceTrackerTest {
         override suspend fun startServer() { startServerCalls.incrementAndGet() }
         override suspend fun shell(serial: String, cmd: String): String {
             shellCalls.incrementAndGet()
-            return "Pixel 8 Pro\n15\n35\n"
+            return "Pixel 8 Pro\n15\n35\n39121FDJH004AB\n"
         }
     }
 
@@ -115,10 +115,24 @@ class DeviceTrackerTest {
         val tracker = DeviceTracker(client, scope)
         withTimeout(5000) {
             val withInfo = tracker.devices.first { it.firstOrNull()?.info != null && it.size == 2 }
-            assertEquals(DeviceInfo("Pixel 8 Pro", "15", 35), withInfo.first().info)
+            assertEquals(DeviceInfo("Pixel 8 Pro", "15", 35, "39121FDJH004AB"), withInfo.first().info)
         }
         Thread.sleep(200)
         assertEquals(1, client.shellCalls.get())
+    }
+
+    @Test
+    fun `retries a failed info fetch`() = runBlocking {
+        serve({ s -> send(s, "OKAY" + frame(one)); Thread.sleep(3000) })
+        val client = object : FakeClient(server.localPort) {
+            override suspend fun shell(serial: String, cmd: String): String {
+                if (shellCalls.incrementAndGet() == 1) throw IOException("device still starting")
+                return "Pixel 8 Pro\n15\n35\n39121FDJH004AB\n"
+            }
+        }
+        val tracker = DeviceTracker(client, scope, infoRetryMs = 10)
+        withTimeout(2000) { tracker.devices.first { it.firstOrNull()?.info != null } }
+        assertEquals(2, client.shellCalls.get())
     }
 
     @Test

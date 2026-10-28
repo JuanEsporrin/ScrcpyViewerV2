@@ -12,7 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 
-private const val INFO_COMMAND = "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk"
+private const val INFO_COMMAND = "getprop ro.product.model; getprop ro.build.version.release; getprop ro.build.version.sdk; getprop ro.serialno"
+private const val INFO_ATTEMPTS = 5
 
 /** Keeps [devices] in sync with the adb server's `host:track-devices-l` stream and reconnects with backoff. */
 class DeviceTracker(
@@ -20,6 +21,8 @@ class DeviceTracker(
     private val scope: CoroutineScope,
     private val initialBackoffMs: Long = 250,
     private val maxBackoffMs: Long = 5000,
+    /** First delay before re-asking a device for its info; doubles per attempt. */
+    private val infoRetryMs: Long = 500,
 ) {
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     val devices: StateFlow<List<Device>> = _devices.asStateFlow()
@@ -103,12 +106,23 @@ class DeviceTracker(
     }
 
     private suspend fun fetchInfo(key: Key) {
-        val info = try {
-            parseInfo(client.shell(key.serial, INFO_COMMAND))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
+        var info: DeviceInfo? = null
+        // A device that just connected over Wi-Fi may not answer yet; retry with backoff while it is still listed,
+        // since its options key (ro.serialno) comes from this info.
+        for (attempt in 0 until INFO_ATTEMPTS) {
+            if (attempt > 0) {
+                delay(infoRetryMs shl (attempt - 1))
+                val stillListed = synchronized(lock) { key in inFlight && raw.any { Key(it.serial, it.transportId) == key } }
+                if (!stillListed) break
+            }
+            info = try {
+                parseInfo(client.shell(key.serial, INFO_COMMAND))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (info != null) break
         }
         synchronized(lock) {
             // Ignore the result if a reconnect cleared the in-flight marker meanwhile.
@@ -125,6 +139,11 @@ class DeviceTracker(
     private fun parseInfo(output: String): DeviceInfo? {
         val lines = output.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size < 3) return null
-        return DeviceInfo(model = lines[0], androidVersion = lines[1], sdk = lines[2].toIntOrNull() ?: return null)
+        return DeviceInfo(
+            model = lines[0],
+            androidVersion = lines[1],
+            sdk = lines[2].toIntOrNull() ?: return null,
+            serialNo = lines.getOrNull(3),
+        )
     }
 }

@@ -3,6 +3,15 @@ package com.programmersbox.scrcpyviewer.ui.devices
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.adb.DeviceInfo
 import com.programmersbox.scrcpyviewer.adb.DeviceState
+import com.programmersbox.scrcpyviewer.adb.AdbOutcome
+import com.programmersbox.scrcpyviewer.adb.FakeWirelessAdb
+import com.programmersbox.scrcpyviewer.adb.SwitchResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.Preset
@@ -37,7 +46,123 @@ class DevicesViewModelTest {
     private val connected = MutableStateFlow(true)
     private val mirrorRequests = MutableSharedFlow<String>(replay = 8)
 
-    private fun vm() = DevicesViewModel(devices, connected, options, presets, scope, mirrorRequests)
+    private val wireless = FakeWirelessAdb()
+
+    private fun vm() = DevicesViewModel(devices, connected, options, presets, scope, mirrorRequests, wireless)
+
+    private val pixel = device("R1", info = DeviceInfo("Pixel 8 Pro", "15", 35, "R1"))
+    private val usbAbc = device("ABC")
+    private val tcpAbc = Device("192.168.1.31:5555", DeviceState.Device, "device", null, null, 9, true, DeviceInfo("P", "15", 35, "ABC"))
+
+    /** Collects notices from [vm] into a list (Unconfined scope, so emission is synchronous). */
+    private fun notices(vm: DevicesViewModel): List<WifiNotice> {
+        val out = java.util.Collections.synchronizedList(ArrayList<WifiNotice>())
+        scope.launch { vm.notices.collect { out += it } }
+        return out
+    }
+
+    @Test
+    fun `wifi device shares options with its usb twin`() {
+        devices.value = listOf(usbAbc)
+        val vm = vm()
+        vm.toggle("no-audio", true)
+        devices.value = listOf(usbAbc, tcpAbc)
+        vm.select(tcpAbc.serial)
+        assertEquals("ABC", vm.selectedOptionsKey.value)
+        assertTrue("no-audio" in vm.state.value.values.entries)
+    }
+
+    @Test
+    fun `wifi device without info uses its own key then switches`() {
+        devices.value = listOf(usbAbc)
+        val vm = vm()
+        vm.toggle("no-audio", true)
+        devices.value = listOf(usbAbc, tcpAbc.copy(info = null))
+        vm.select(tcpAbc.serial)
+        assertEquals("192.168.1.31:5555", vm.selectedOptionsKey.value)
+        assertFalse("no-audio" in vm.state.value.values.entries)
+        devices.value = listOf(usbAbc, tcpAbc)
+        assertEquals("ABC", vm.selectedOptionsKey.value)
+        assertTrue("no-audio" in vm.state.value.values.entries)
+    }
+
+    @Test
+    fun `connectOverWifi success emits notice with mirror action`() {
+        devices.value = listOf(pixel)
+        wireless.switchResult = SwitchResult.Connected("192.168.1.31:5555")
+        val vm = vm()
+        val seen = notices(vm)
+        vm.connectOverWifi("R1")
+        assertEquals(listOf(WifiNotice("Pixel 8 Pro connected at 192.168.1.31:5555", "192.168.1.31:5555")), seen)
+    }
+
+    @Test
+    fun `connectOverWifi failures`() {
+        devices.value = listOf(pixel)
+        val vm = vm()
+        val seen = notices(vm)
+        wireless.switchResult = SwitchResult.NotOnWifi
+        vm.connectOverWifi("R1")
+        wireless.switchResult = SwitchResult.TcpipFailed("error: closed")
+        vm.connectOverWifi("R1")
+        wireless.switchResult = SwitchResult.ConnectFailed("192.168.1.31:5555", "Connection refused")
+        vm.connectOverWifi("R1")
+        assertEquals(
+            listOf(
+                "Pixel 8 Pro isn't on Wi-Fi. Connect it to the same network as this computer.",
+                "Couldn't switch Pixel 8 Pro to Wi-Fi: error: closed",
+                "Couldn't connect to 192.168.1.31:5555: Connection refused",
+            ),
+            seen.map { it.text },
+        )
+    }
+
+    @Test
+    fun `connectOverWifi ignores a second click while running`() = runBlocking {
+        devices.value = listOf(pixel)
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : FakeWirelessAdb() {
+            override suspend fun switchToWifi(serial: String): SwitchResult {
+                calls += "switch $serial"
+                gate.await()
+                return SwitchResult.NotOnWifi
+            }
+        }
+        val vm = DevicesViewModel(devices, connected, options, presets, scope, mirrorRequests, slow)
+        vm.connectOverWifi("R1")
+        vm.connectOverWifi("R1")
+        assertEquals(1, slow.calls.count { it.startsWith("switch") })
+        assertEquals(setOf("R1"), vm.state.value.switching)
+        gate.complete(Unit)
+        withTimeout(2000) { while (vm.state.value.switching.isNotEmpty()) delay(10) }
+    }
+
+    @Test
+    fun `notice mirror finds the device under its mdns serial`() = runBlocking {
+        val mdns = Device("adb-ABC-x._adb-tls-connect._tcp", DeviceState.Device, "device", null, null, 9, true)
+        devices.value = listOf(mdns)
+        val vm = vm()
+        vm.mirrorFromNotice(WifiNotice("ABC connected over Wi-Fi", "192.168.1.31:37215", mdnsName = "adb-ABC-x"))
+        assertEquals("adb-ABC-x._adb-tls-connect._tcp", withTimeout(1000) { mirrorRequests.first() })
+    }
+
+    @Test
+    fun `disconnect failure emits notice`() {
+        devices.value = listOf(pixel)
+        wireless.disconnectResult = AdbOutcome.Failed("no such device")
+        val vm = vm()
+        val seen = notices(vm)
+        vm.disconnect("R1")
+        assertEquals(listOf("disconnect R1"), wireless.calls)
+        assertEquals(listOf("Couldn't disconnect Pixel 8 Pro: no such device"), seen.map { it.text })
+    }
+
+    @Test
+    fun `isOnWifi matches the usb device to its wifi twin`() {
+        assertTrue(isOnWifi(usbAbc, listOf(usbAbc, tcpAbc)))
+        assertFalse(isOnWifi(usbAbc, listOf(usbAbc)))
+        assertFalse(isOnWifi(tcpAbc, listOf(usbAbc, tcpAbc)))
+    }
 
     @Test
     fun `first ready device auto-selected`() {
@@ -260,7 +385,7 @@ class DevicesViewModelTest {
         // A file where the data directory should be: every save fails.
         val blocker = Files.writeString(dir.resolve("blocker"), "x")
         val broken = DeviceOptionsStore(blocker.resolve("devices.json"), presets, scope)
-        val vm = DevicesViewModel(devices, connected, broken, presets, scope, mirrorRequests)
+        val vm = DevicesViewModel(devices, connected, broken, presets, scope, mirrorRequests, wireless)
         vm.toggle("no-audio", true)
         assertTrue(vm.state.value.persistenceError?.contains("devices.json") == true, "${vm.state.value.persistenceError}")
     }

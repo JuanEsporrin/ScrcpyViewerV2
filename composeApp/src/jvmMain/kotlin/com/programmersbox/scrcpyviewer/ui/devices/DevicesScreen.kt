@@ -25,6 +25,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -32,7 +36,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +48,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,7 +58,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -56,6 +73,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.adb.DeviceState
+import com.programmersbox.scrcpyviewer.adb.WirelessAdb
+import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.options.OptionCatalog
 import com.programmersbox.scrcpyviewer.options.OptionGroup
 import com.programmersbox.scrcpyviewer.options.OptionSpec
@@ -68,8 +87,33 @@ import com.programmersbox.scrcpyviewer.ui.common.OptionRow
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
 
 @Composable
-fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier, panes: ListDetailPanes = rememberListDetailPanes()) {
+fun DevicesScreen(
+    viewModel: DevicesViewModel,
+    wireless: WirelessAdb,
+    modifier: Modifier = Modifier,
+    panes: ListDetailPanes = rememberListDetailPanes(),
+) {
     val state by viewModel.state.collectAsState()
+    var pairing by remember { mutableStateOf(false) }
+    val snackbar = LocalSnackbarHostState.current
+    LaunchedEffect(viewModel, snackbar) {
+        viewModel.notices.collect { notice ->
+            val host = snackbar ?: return@collect
+            val result = host.showSnackbar(
+                notice.text,
+                actionLabel = notice.mirrorSerial?.let { "Mirror" },
+                duration = if (notice.mirrorSerial != null) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) viewModel.mirrorFromNotice(notice)
+        }
+    }
+    if (pairing) {
+        val scope = rememberCoroutineScope()
+        val pairingVm = remember { WifiPairingViewModel(wireless, scope, onDone = { viewModel.notify(it); pairing = false }) }
+        DisposableEffect(pairingVm) { onDispose { pairingVm.close() } }
+        val pairingState by pairingVm.state.collectAsState()
+        WifiPairingDialog(pairingState, remember(pairingVm) { pairingVm.actions() }, onDismiss = { pairing = false })
+    }
     DevicesContent(
         state = state,
         onSelect = viewModel::select,
@@ -84,6 +128,10 @@ fun DevicesScreen(viewModel: DevicesViewModel, modifier: Modifier = Modifier, pa
         modifier = modifier,
         onPreset = viewModel::applyPreset,
         panes = panes,
+        onPairWifi = { pairing = true },
+        onConnectWifi = viewModel::connectOverWifi,
+        onDisconnect = viewModel::disconnect,
+        canMirror = viewModel::canMirror,
     )
 }
 
@@ -112,7 +160,15 @@ fun DevicesContent(
     /** Starts the preset menu open (for screenshots). */
     presetMenuOpen: Boolean = false,
     panes: ListDetailPanes = rememberListDetailPanes(),
+    onPairWifi: () -> Unit = {},
+    onConnectWifi: (String) -> Unit = {},
+    onDisconnect: (String) -> Unit = {},
+    /** Whether the right-click Mirror item is enabled for a serial. */
+    canMirror: (String) -> Boolean = { serial -> state.devices.any { it.serial == serial && it.state == DeviceState.Device } },
+    /** Starts with this row's right-click menu open (for screenshots). */
+    contextMenuSerial: String? = null,
 ) {
+    val rowActions = RowActions(onOpen = onOpen, onConnectWifi = onConnectWifi, onDisconnect = onDisconnect, canMirror = canMirror)
     Column(modifier.fillMaxSize()) {
         state.persistenceError?.let {
             Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
@@ -127,7 +183,9 @@ fun DevicesContent(
             listMinWidth = DEVICE_LIST_MIN_WIDTH,
             listPreferredWidth = DeviceListPreferredWidth,
             detailMinWidth = DEVICE_OPTIONS_MIN_WIDTH,
-            list = { DeviceColumn(state, onSelect = { onSelect(it); panes.navigation.openDetail() }, onOpen) },
+            list = {
+                DeviceColumn(state, onSelect = { onSelect(it); panes.navigation.openDetail() }, onSelect, rowActions, onPairWifi, contextMenuSerial)
+            },
             detail = { onBack ->
                 Column(Modifier.fillMaxSize()) {
                     if (state.selectedSerial == null) {
@@ -146,8 +204,24 @@ fun DevicesContent(
     }
 }
 
+/** What a device row's double-click and right-click menu do. */
+internal class RowActions(
+    val onOpen: (String) -> Unit,
+    val onConnectWifi: (String) -> Unit,
+    val onDisconnect: (String) -> Unit,
+    val canMirror: (String) -> Boolean,
+)
+
 @Composable
-private fun DeviceColumn(state: DevicesUiState, onSelect: (String) -> Unit, onOpen: (String) -> Unit) {
+private fun DeviceColumn(
+    state: DevicesUiState,
+    onSelect: (String) -> Unit,
+    /** Selects without opening the detail pane (right-click). */
+    onHighlight: (String) -> Unit,
+    actions: RowActions,
+    onPairWifi: () -> Unit,
+    contextMenuSerial: String?,
+) {
     Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLow).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -168,23 +242,83 @@ private fun DeviceColumn(state: DevicesUiState, onSelect: (String) -> Unit, onOp
                 Text("Starting adb…", style = MaterialTheme.typography.bodyMedium)
             }
             state.devices.isEmpty() -> Text(
-                "No devices. Connect a device with USB debugging on.",
+                "No devices. Connect a device with USB debugging on, or pair one over Wi-Fi.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(4.dp),
             )
-            else -> Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            else -> Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 state.devices.forEach { device ->
-                    DeviceRow(device, device.serial == state.selectedSerial, { onSelect(device.serial) }, { onOpen(device.serial) })
+                    DeviceRow(
+                        device = device,
+                        selected = device.serial == state.selectedSerial,
+                        onClick = { onSelect(device.serial) },
+                        onSecondaryClick = { onHighlight(device.serial) },
+                        menu = { onDismiss -> DeviceMenu(device, state, actions, onDismiss) },
+                        menuInitiallyOpen = device.serial == contextMenuSerial,
+                        onDoubleClick = { actions.onOpen(device.serial) },
+                    )
                 }
             }
+        }
+        // The device list takes the free space when present; otherwise this pushes the button to the bottom.
+        if (!state.adbConnected || state.devices.isEmpty()) Spacer(Modifier.weight(1f))
+        FilledTonalButton(onClick = onPairWifi, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Wifi, contentDescription = null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Pair over Wi-Fi")
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+/** The right-click menu's items: Mirror, plus Connect over Wi-Fi (USB) or Disconnect (Wi-Fi). Internal for screenshots. */
 @Composable
-private fun DeviceRow(device: Device, selected: Boolean, onClick: () -> Unit, onDoubleClick: () -> Unit) {
+internal fun DeviceMenu(device: Device, state: DevicesUiState, actions: RowActions, onDismiss: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text("Mirror") },
+        onClick = { onDismiss(); actions.onOpen(device.serial) },
+        enabled = actions.canMirror(device.serial),
+        leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null, Modifier.size(18.dp)) },
+        trailingIcon = { Text("double-click", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace) },
+    )
+    if (device.isTcp) {
+        DropdownMenuItem(
+            text = { Text("Disconnect") },
+            onClick = { onDismiss(); actions.onDisconnect(device.serial) },
+            leadingIcon = { Icon(Icons.Filled.LinkOff, contentDescription = null, Modifier.size(18.dp)) },
+        )
+    } else {
+        val switching = device.serial in state.switching
+        val onWifi = isOnWifi(device, state.devices)
+        DropdownMenuItem(
+            text = {
+                Text(
+                    when {
+                        switching -> "Connecting over Wi-Fi…"
+                        onWifi -> "Connected over Wi-Fi"
+                        else -> "Connect over Wi-Fi"
+                    },
+                )
+            },
+            onClick = { onDismiss(); actions.onConnectWifi(device.serial) },
+            enabled = !switching && !onWifi && device.state == DeviceState.Device,
+            leadingIcon = { Icon(Icons.Filled.Wifi, contentDescription = null, Modifier.size(18.dp)) },
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
+@Composable
+private fun DeviceRow(
+    device: Device,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onSecondaryClick: () -> Unit,
+    menu: @Composable (onDismiss: () -> Unit) -> Unit,
+    menuInitiallyOpen: Boolean,
+    onDoubleClick: () -> Unit,
+) {
+    var menuAt by remember { mutableStateOf(if (menuInitiallyOpen) Offset(120f, 40f) else null) }
     val shape = RoundedCornerShape(12.dp)
     val dot = when (device.state) {
         DeviceState.Device -> MaterialTheme.colorScheme.primary
@@ -197,9 +331,16 @@ private fun DeviceRow(device: Device, selected: Boolean, onClick: () -> Unit, on
         DeviceState.Offline -> "Reconnect the cable or run adb reconnect"
         DeviceState.Other -> device.rawState
     }
+    Box {
     Row(
         Modifier
             .fillMaxWidth()
+            .onPointerEvent(PointerEventType.Press) { event ->
+                if (event.buttons.isSecondaryPressed) {
+                    onSecondaryClick()
+                    menuAt = event.changes.first().position
+                }
+            }
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface)
             .then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier)
@@ -211,19 +352,52 @@ private fun DeviceRow(device: Device, selected: Boolean, onClick: () -> Unit, on
         Box(Modifier.size(10.dp).clip(CircleShape).background(dot))
         Column(Modifier.weight(1f)) {
             val title = deviceTitle(device)
-            if (title != device.serial) Text(title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                device.serial,
-                style = if (title == device.serial) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            val serialText = @Composable { modifier: Modifier ->
+                Text(
+                    device.serial,
+                    style = if (title == device.serial) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = modifier,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (title != device.serial) {
+                    Text(title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                } else {
+                    serialText(Modifier.weight(1f, fill = false))
+                }
+                ConnectionTag(device.isTcp)
+            }
+            if (title != device.serial) serialText(Modifier)
             if (hint != null) {
                 Text(hint, style = MaterialTheme.typography.labelSmall, color = dot)
             }
         }
+    }
+    menuAt?.let { at ->
+        // A zero-size anchor at the pointer, so the menu opens where the user clicked.
+        Box(Modifier.offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }) {
+            DropdownMenu(expanded = true, onDismissRequest = { menuAt = null }) { menu { menuAt = null } }
+        }
+    }
+    }
+}
+
+/** "USB" or "Wi-Fi" after the device name. */
+@Composable
+private fun ConnectionTag(wifi: Boolean) {
+    val container = if (wifi) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+    val content = if (wifi) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier.clip(RoundedCornerShape(6.dp)).background(container).padding(horizontal = 6.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(if (wifi) Icons.Filled.Wifi else Icons.Filled.Usb, contentDescription = null, Modifier.size(12.dp), tint = content)
+        Text(if (wifi) "Wi-Fi" else "USB", style = MaterialTheme.typography.labelSmall, color = content)
     }
 }
 
