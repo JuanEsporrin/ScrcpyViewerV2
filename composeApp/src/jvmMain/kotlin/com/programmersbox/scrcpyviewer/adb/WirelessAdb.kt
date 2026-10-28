@@ -34,9 +34,22 @@ open class WirelessAdb(
         WirelessParsers.connectOutcome(client.exec("connect", address).stdout)
     }
 
+    /**
+     * `adb disconnect` expects `host[:port]`. A device adb connected through mDNS has a
+     * `<service>._adb-tls-connect._tcp` serial, so on failure retry with that service's address.
+     */
     open suspend fun disconnect(serial: String): AdbOutcome = guarded {
-        val result = client.exec("disconnect", serial)
-        if (result.exitCode == 0) AdbOutcome.Ok else AdbOutcome.Failed((result.stderr + result.stdout).trim())
+        val first = disconnectOnce(serial)
+        if (first == AdbOutcome.Ok || !serial.endsWith(MDNS_CONNECT_SUFFIX)) return@guarded first
+        val name = serial.removeSuffix(MDNS_CONNECT_SUFFIX)
+        val address = mdnsServices().firstOrNull { it.type == MdnsType.Connect && it.name == name }?.address
+            ?: return@guarded first
+        disconnectOnce(address)
+    }
+
+    private suspend fun disconnectOnce(target: String): AdbOutcome {
+        val result = client.exec("disconnect", target)
+        return if (result.exitCode == 0) AdbOutcome.Ok else AdbOutcome.Failed((result.stderr + result.stdout).trim())
     }
 
     /** The device's Wi-Fi IPv4 address, read over its current connection, or null. */
@@ -82,5 +95,6 @@ open class WirelessAdb(
         const val PAIR_TIMEOUT_MS = 15_000L
         const val TCPIP_PORT = 5555
         const val CONNECT_ATTEMPTS = 5
+        const val MDNS_CONNECT_SUFFIX = "._adb-tls-connect._tcp"
     }
 }

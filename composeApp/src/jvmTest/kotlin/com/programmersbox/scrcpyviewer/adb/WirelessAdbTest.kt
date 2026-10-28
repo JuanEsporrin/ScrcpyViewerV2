@@ -58,6 +58,21 @@ class WirelessAdbTest {
     }
 
     @Test
+    fun `disconnect falls back to the mdns service address`() = runBlocking {
+        val mdns = "adb-ABC-x._adb-tls-connect._tcp"
+        val client = FakeClient { args ->
+            when {
+                args == listOf("mdns", "services") ->
+                    ProcessResult(0, "List of discovered mdns services\nadb-ABC-x\t_adb-tls-connect._tcp\t192.168.1.31:37215\n", "")
+                args == listOf("disconnect", mdns) -> ProcessResult(1, "", "error: no such device '$mdns:5555'\n")
+                else -> ProcessResult(0, "disconnected 192.168.1.31:37215\n", "")
+            }
+        }
+        assertEquals(AdbOutcome.Ok, WirelessAdb(client).disconnect(mdns))
+        assertEquals(listOf("disconnect", "192.168.1.31:37215"), client.execCalls.last())
+    }
+
+    @Test
     fun `mdnsServices swallows failures`() = runBlocking {
         val client = FakeClient { throw IOException("boom") }
         assertEquals(emptyList(), WirelessAdb(client).mdnsServices())

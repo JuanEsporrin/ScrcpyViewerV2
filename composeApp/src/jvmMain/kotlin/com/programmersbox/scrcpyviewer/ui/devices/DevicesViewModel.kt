@@ -59,8 +59,11 @@ data class DevicesUiState(
     val switching: Set<String> = emptySet(),
 )
 
-/** A snackbar message from a Wi-Fi action; [mirrorSerial] adds a Mirror action for that device. */
-data class WifiNotice(val text: String, val mirrorSerial: String? = null)
+/**
+ * A snackbar message from a Wi-Fi action; [mirrorSerial] adds a Mirror action for that device. [mdnsName] is the
+ * phone's connect service, for when adb lists it as `<mdnsName>._adb-tls-connect._tcp` instead of [mirrorSerial].
+ */
+data class WifiNotice(val text: String, val mirrorSerial: String? = null, val mdnsName: String? = null)
 
 private data class Selection(
     val devices: List<Device>,
@@ -236,6 +239,16 @@ class DevicesViewModel(
     }
 
     /** Shows [notice] in the snackbar (the pairing dialog reports its result this way). */
+    /** The snackbar's Mirror action: mirrors the notice's device under whichever serial adb lists it. */
+    fun mirrorFromNotice(notice: WifiNotice) {
+        val devices = state.value.devices
+        val serial = notice.mirrorSerial?.takeIf { s -> devices.any { it.serial == s } }
+            ?: notice.mdnsName?.let { name -> devices.firstOrNull { it.serial.startsWith("$name.") }?.serial }
+            ?: notice.mirrorSerial
+            ?: return
+        openDevice(serial)
+    }
+
     fun notify(notice: WifiNotice) {
         _notices.tryEmit(notice)
     }

@@ -169,7 +169,7 @@ class WifiPairingViewModel(
         when (val connected = wireless.connect(connectService.address)) {
             AdbOutcome.Ok -> {
                 val name = label(connectService.name, connectService.address)
-                succeed(WifiNotice("$name connected over Wi-Fi", connectService.address))
+                succeed(WifiNotice("$name connected over Wi-Fi", connectService.address, mdnsName = connectService.name))
             }
             else -> fail("Couldn't connect: ${message(connected)}")
         }

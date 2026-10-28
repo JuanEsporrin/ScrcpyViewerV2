@@ -122,6 +122,20 @@ class DeviceTrackerTest {
     }
 
     @Test
+    fun `retries a failed info fetch`() = runBlocking {
+        serve({ s -> send(s, "OKAY" + frame(one)); Thread.sleep(3000) })
+        val client = object : FakeClient(server.localPort) {
+            override suspend fun shell(serial: String, cmd: String): String {
+                if (shellCalls.incrementAndGet() == 1) throw IOException("device still starting")
+                return "Pixel 8 Pro\n15\n35\n39121FDJH004AB\n"
+            }
+        }
+        val tracker = DeviceTracker(client, scope, infoRetryMs = 10)
+        withTimeout(2000) { tracker.devices.first { it.firstOrNull()?.info != null } }
+        assertEquals(2, client.shellCalls.get())
+    }
+
+    @Test
     fun `restart reconnects and drops the old stream`() = runBlocking {
         serve(
             { s -> send(s, "OKAY" + frame(one)); Thread.sleep(3000) },

@@ -65,6 +65,7 @@ class WifiPairingViewModelTest {
         )
         val notice = withTimeout(3000) { done.await() }
         assertEquals("ABC connected over Wi-Fi", notice.text)
+        assertEquals("adb-ABC-x", notice.mdnsName)
         assertTrue("pair 192.168.1.31:41877 ${s.qrPassword}" in wireless.calls)
         assertTrue("connect 192.168.1.31:37215" in wireless.calls)
     }

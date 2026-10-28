@@ -104,7 +104,7 @@ fun DevicesScreen(
                 actionLabel = notice.mirrorSerial?.let { "Mirror" },
                 duration = if (notice.mirrorSerial != null) SnackbarDuration.Long else SnackbarDuration.Short,
             )
-            if (result == SnackbarResult.ActionPerformed) notice.mirrorSerial?.let(viewModel::openDevice)
+            if (result == SnackbarResult.ActionPerformed) viewModel.mirrorFromNotice(notice)
         }
     }
     if (pairing) {

@@ -8,6 +8,7 @@ import com.programmersbox.scrcpyviewer.adb.FakeWirelessAdb
 import com.programmersbox.scrcpyviewer.adb.SwitchResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -134,6 +135,15 @@ class DevicesViewModelTest {
         assertEquals(setOf("R1"), vm.state.value.switching)
         gate.complete(Unit)
         withTimeout(2000) { while (vm.state.value.switching.isNotEmpty()) delay(10) }
+    }
+
+    @Test
+    fun `notice mirror finds the device under its mdns serial`() = runBlocking {
+        val mdns = Device("adb-ABC-x._adb-tls-connect._tcp", DeviceState.Device, "device", null, null, 9, true)
+        devices.value = listOf(mdns)
+        val vm = vm()
+        vm.mirrorFromNotice(WifiNotice("ABC connected over Wi-Fi", "192.168.1.31:37215", mdnsName = "adb-ABC-x"))
+        assertEquals("adb-ABC-x._adb-tls-connect._tcp", withTimeout(1000) { mirrorRequests.first() })
     }
 
     @Test
