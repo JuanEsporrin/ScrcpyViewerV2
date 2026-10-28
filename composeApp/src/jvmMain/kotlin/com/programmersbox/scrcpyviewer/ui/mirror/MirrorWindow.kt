@@ -105,7 +105,6 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
@@ -132,6 +131,10 @@ import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
+import com.programmersbox.scrcpyviewer.ui.window.AppTitleBarScope
+import com.programmersbox.scrcpyviewer.ui.window.AppWindow
+import com.programmersbox.scrcpyviewer.ui.window.WindowChrome
+import com.programmersbox.scrcpyviewer.ui.window.windowChrome
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
@@ -271,6 +274,9 @@ fun parseHexColor(value: String?): Color? {
  * reports instead of key/text/touch injections. The UHID mouse is relative, so the window captures the pointer
  * (see [MouseCapture]): the cursor is hidden over the video and moved back to its centre with `java.awt.Robot`,
  * and motion is sent as deltas. Without a working Robot the deltas still flow, until the pointer leaves the video.
+ *
+ * The top strip ([TopStrip]) is the window's title bar ([AppWindow]): window controls at its edge, empty
+ * space drags the window. With the system title bar it sits at the top of the content instead.
  */
 @Composable
 fun MirrorWindow(
@@ -278,6 +284,8 @@ fun MirrorWindow(
     session: ScrcpySession,
     controller: MirrorController,
     themeMode: ThemeMode,
+    /** `Settings.useSystemTitleBar`, read when the window opens. */
+    useSystemTitleBar: Boolean?,
     /** `Settings.captureDir`: where screenshots and recordings started from the toolbar go. */
     captureDir: String,
     /** Runs `adb install` / `adb push` for dropped files and the Install APK… / Push file… buttons; null disables them. */
@@ -423,7 +431,7 @@ fun MirrorWindow(
     }
     val applyZoom: (ZoomCommand) -> Unit = { zoom = Zoom.step(zoom, fittedScale(), it) }
     val currentApplyZoom by rememberUpdatedState(applyZoom)
-    // Set by the window's focus listener; the AWT window only exists inside Window {} below.
+    // Set by the window's focus listener; the AWT window only exists inside AppWindow {} below.
     var windowFocused by remember { mutableStateOf(false) }
     var awtWindowRef by remember { mutableStateOf<java.awt.Window?>(null) }
     val robot = remember(hidMouse != null) { if (hidMouse != null) WindowPointerCapture.robotOrNull() else null }
@@ -495,12 +503,19 @@ fun MirrorWindow(
         dropHint = transfers.hint,
     )
 
-    Window(
+    AppWindow(
         onCloseRequest = { controller.close(serial) },
-        state = windowState,
         title = mirrorTitle(model, serial, values),
-        icon = AppIcon.painter,
+        themeMode = themeMode,
+        chrome = remember { windowChrome(useSystemTitleBar) },
+        state = windowState,
         alwaysOnTop = "always-on-top" in e,
+        icon = AppIcon.painter,
+        titleBarHeight = 40.dp,
+        titleBar = {
+            // The strip's Copy command shows its "Copied" message in the window's snackbar.
+            CompositionLocalProvider(LocalSnackbarHostState provides snackbar) { TopStrip(state, applyZoom) }
+        },
     ) {
         LaunchedEffect(serial) {
             controller.focusRequests.filter { it == serial }.collect {
@@ -616,6 +631,7 @@ fun MirrorWindow(
                     MirrorContent(
                         state = state,
                         frame = frame,
+                        showTopStrip = false, // drawn by the window's title bar
                         latestFrame = { session.frames.value },
                         onZoom = applyZoom,
                         onAction = { action ->
@@ -687,10 +703,12 @@ fun MirrorContent(
     clickIndicator: ClickIndicator? = null,
     /** The stage's bounds in window pixels. */
     onStageBounds: (Rect) -> Unit = {},
+    /** False when the window draws [TopStrip] as its title bar; the divider below it stays. */
+    showTopStrip: Boolean = true,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxSize()) {
-        TopStrip(state, onZoom)
+        if (showTopStrip) NoTitleBarScope.TopStrip(state, onZoom)
         HorizontalDivider(color = colors.outlineVariant)
         Row(Modifier.weight(1f).fillMaxWidth()) {
             Box(
@@ -731,10 +749,21 @@ private val COPY_MIN = 620.dp
 private val FIT_MIN = 480.dp
 private val ZOOM_MIN = 340.dp
 
+/** [TopStrip] drawn inside the content (offscreen renders): nothing to mark for the window. */
+private object NoTitleBarScope : AppTitleBarScope {
+    override val chrome get() = WindowChrome.System
+    override fun Modifier.interactive(key: String): Modifier = this
+}
+
+/**
+ * The status dot, model, details, zoom controls and overflow menu; the mirror window's title bar. In the custom bar
+ * it is transparent (the bar paints `surfaceContainer`) and as tall as the bar; its clickables are [interactive].
+ */
 @Composable
-private fun TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
+internal fun AppTitleBarScope.TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
     val colors = MaterialTheme.colorScheme
-    BoxWithConstraints(Modifier.fillMaxWidth().background(colors.surfaceContainer)) {
+    val custom = chrome == WindowChrome.Custom
+    BoxWithConstraints(Modifier.fillMaxWidth().background(if (custom) Color.Transparent else colors.surfaceContainer)) {
         val w = maxWidth
         val showDetails = state.details.isNotEmpty() && w >= DETAILS_MIN
         val showCopy = w >= COPY_MIN
@@ -742,7 +771,7 @@ private fun TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
         val showZoom = w >= ZOOM_MIN
         val overflow = !showCopy || !showFit || !showZoom
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp).heightIn(min = 40.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = if (custom) 0.dp else 4.dp).heightIn(min = 40.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -781,9 +810,10 @@ private fun TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
                     selected = state.fit,
                     onClick = { onZoom(if (state.fit) ZoomCommand.Actual else ZoomCommand.Fit) },
                     label = { Text("Fit to window", maxLines = 1, softWrap = false) },
+                    modifier = Modifier.interactive("fit"),
                 )
             }
-            if (showCopy) CopyButton(text = { state.command }, label = "Copy command")
+            if (showCopy) CopyButton(text = { state.command }, label = "Copy command", modifier = Modifier.interactive("copy"))
             if (overflow) OverflowMenu(state, onZoom, showZoom = showZoom, showFit = showFit, showCopy = showCopy)
         }
     }
@@ -791,20 +821,20 @@ private fun TopStrip(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
 
 /** "−", the zoom percent (a click toggles Fit and 100 %) and "+". */
 @Composable
-private fun ZoomControls(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
+private fun AppTitleBarScope.ZoomControls(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
     val scale = state.zoom ?: state.fittedScale
     Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = { onZoom(ZoomCommand.Out) }, Modifier.size(32.dp)) {
+        IconButton(onClick = { onZoom(ZoomCommand.Out) }, Modifier.interactive("zoom-out").size(32.dp)) {
             Text("−", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
         }
         TextButton(
             onClick = { onZoom(if (state.fit) ZoomCommand.Actual else ZoomCommand.Fit) },
-            Modifier.widthIn(min = 56.dp),
+            Modifier.interactive("zoom-percent").widthIn(min = 56.dp),
             contentPadding = PaddingValues(horizontal = 6.dp),
         ) {
             Text(Zoom.label(scale), maxLines = 1, softWrap = false, fontFamily = FontFamily.Monospace)
         }
-        IconButton(onClick = { onZoom(ZoomCommand.In) }, Modifier.size(32.dp)) {
+        IconButton(onClick = { onZoom(ZoomCommand.In) }, Modifier.interactive("zoom-in").size(32.dp)) {
             Text("+", style = MaterialTheme.typography.titleMedium, maxLines = 1, softWrap = false)
         }
     }
@@ -812,11 +842,11 @@ private fun ZoomControls(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit) {
 
 /** The "⋮" menu holding what the top strip has no room for. */
 @Composable
-private fun OverflowMenu(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit, showZoom: Boolean, showFit: Boolean, showCopy: Boolean) {
+private fun AppTitleBarScope.OverflowMenu(state: MirrorUiState, onZoom: (ZoomCommand) -> Unit, showZoom: Boolean, showFit: Boolean, showCopy: Boolean) {
     var open by remember { mutableStateOf(false) }
     val copy = rememberCopyAction()
     Box {
-        IconButton(onClick = { open = true }, Modifier.size(32.dp)) {
+        IconButton(onClick = { open = true }, Modifier.interactive("overflow").size(32.dp)) {
             Icon(Icons.Filled.MoreVert, contentDescription = "More")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {

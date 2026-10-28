@@ -32,12 +32,12 @@ class SettingsScreenshotTest {
         customAdbVersion = "1.0.41 (34.0.4)",
     )
 
-    private fun render(name: String, mode: ThemeMode, state: SettingsUiState = this.state) {
+    private fun render(name: String, mode: ThemeMode, state: SettingsUiState = this.state, customTitleBarSupported: Boolean = true) {
         val out = outDir.resolve(name)
         renderToPng(1280, 800, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    SettingsContent(state.copy(settings = state.settings.copy(themeMode = mode)), {}, {}, {}, {}, {}, {})
+                    SettingsContent(state.copy(settings = state.settings.copy(themeMode = mode)), {}, {}, {}, {}, {}, {}, {}, customTitleBarSupported = customTitleBarSupported)
                 }
             }
         }
@@ -55,6 +55,10 @@ class SettingsScreenshotTest {
         "settings-light-error.png", ThemeMode.Light,
         state.copy(settings = state.settings.copy(adbPathOverride = null), adbPathError = "File not found: /nope/adb", defaultPresetId = null),
     )
+
+    @Test
+    fun `settings without custom title bar support`() =
+        render("settings-light-no-custom-bar.png", ThemeMode.Light, customTitleBarSupported = false)
 
     @Test
     fun `app light with rail`() {

@@ -115,6 +115,15 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `system title bar choice is saved`() {
+        val vm = vm()
+        vm.setUseSystemTitleBar(true)
+        assertEquals(true, settings.settings.value.useSystemTitleBar)
+        vm.setUseSystemTitleBar(false)
+        assertEquals(false, settings.settings.value.useSystemTitleBar)
+    }
+
+    @Test
     fun `parses adb version output`() {
         assertEquals(
             "1.0.41 (35.0.2)",

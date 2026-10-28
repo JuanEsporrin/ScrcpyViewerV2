@@ -1,11 +1,15 @@
 package com.programmersbox.scrcpyviewer.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.media.VideoFrame
 import com.programmersbox.scrcpyviewer.scrcpy.SessionStatus
 import com.programmersbox.scrcpyviewer.ui.mirror.ClickIndicator
@@ -15,9 +19,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorContent
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorUiState
+import com.programmersbox.scrcpyviewer.ui.mirror.TopStrip
 import com.programmersbox.scrcpyviewer.ui.mirror.dropHint
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import com.programmersbox.scrcpyviewer.ui.window.AppTitleBarScope
+import com.programmersbox.scrcpyviewer.ui.window.WindowChrome
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.Canvas
 import org.jetbrains.skia.Font
@@ -27,6 +34,12 @@ import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertTrue
+
+/** The custom title bar's scope, without a window to mark regions in. */
+private object CustomBarScope : AppTitleBarScope {
+    override val chrome get() = WindowChrome.Custom
+    override fun Modifier.interactive(key: String): Modifier = this
+}
 
 /** Excluded from the default `jvmTest` run; run with `./gradlew :composeApp:jvmTest -Pscreenshots`. */
 class MirrorScreenshotTest {
@@ -74,13 +87,13 @@ class MirrorScreenshotTest {
         command = "scrcpy -s 39121FDJH004AB --max-size=1920",
     )
 
-    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state, clickIndicator: ClickIndicator? = null, width: Int = 1280, height: Int = 800) {
+    private fun render(name: String, mode: ThemeMode, state: MirrorUiState = this.state, clickIndicator: ClickIndicator? = null, width: Int = 1280, height: Int = 800, showTopStrip: Boolean = true) {
         val out = outDir.resolve(name)
         val frame = mutableStateOf<VideoFrame?>(syntheticFrame())
         renderToPng(width, height, out) {
             ScrcpyViewerTheme(mode) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    MirrorContent(state, frame, {}, {}, {}, {}, {}, {}, clickIndicator = clickIndicator)
+                    MirrorContent(state, frame, {}, {}, {}, {}, {}, {}, clickIndicator = clickIndicator, showTopStrip = showTopStrip)
                 }
             }
         }
@@ -92,6 +105,32 @@ class MirrorScreenshotTest {
 
     @Test
     fun `mirror dark`() = render("mirror-dark.png", ThemeMode.Dark)
+
+    /** The window's content when the strip is drawn by the window's title bar instead. */
+    @Test
+    fun `mirror without top strip`() {
+        render("mirror-no-strip-light.png", ThemeMode.Light, showTopStrip = false)
+        render("mirror-no-strip-dark.png", ThemeMode.Dark, showTopStrip = false)
+    }
+
+    private fun renderCustomStrip(name: String, mode: ThemeMode) {
+        val out = outDir.resolve(name)
+        renderToPng(640, 40, out) {
+            ScrcpyViewerTheme(mode) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer).padding(start = 80.dp)) {
+                    CustomBarScope.TopStrip(state) {}
+                }
+            }
+        }
+        assertTrue(Files.size(out) > 1_000, "$name should not be blank")
+    }
+
+    /** [TopStrip] as the custom title bar paints it: on the bar's `surfaceContainer`, 40dp tall, after an 80dp control inset. */
+    @Test
+    fun `mirror top strip in custom title bar`() {
+        renderCustomStrip("mirror-strip-custom-light.png", ThemeMode.Light)
+        renderCustomStrip("mirror-strip-custom-dark.png", ThemeMode.Dark)
+    }
 
     @Test
     fun `mirror disconnected`() = render(

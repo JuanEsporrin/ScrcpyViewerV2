@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +22,9 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import com.programmersbox.scrcpyviewer.ui.window.AppWindow
+import com.programmersbox.scrcpyviewer.ui.window.WindowChrome
+import com.programmersbox.scrcpyviewer.ui.window.windowChrome
 import javax.swing.SwingUtilities
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -157,20 +161,35 @@ fun main() {
         }
         LaunchedEffect(shutdownState) { shutdown.run() }
         val shuttingDown = shutdownState as? AppShutdown.State.ShuttingDown
-        Window(
+        // Read once: a settings change applies to windows opened later, not this one.
+        val mainChrome = remember { windowChrome(settings.useSystemTitleBar) }
+        AppWindow(
             onCloseRequest = shutdown::request,
-            title = "Scrcpy Viewer",
-            icon = AppIcon.painter,
+            title = appTitle(),
+            themeMode = settings.themeMode,
+            chrome = mainChrome,
             visible = shuttingDown == null,
+            titleBar = { if (chrome == WindowChrome.Custom) MainTitle() },
         ) {
             App(graph)
         }
         for ((serial, session) in mirrors) {
             key(serial) {
-                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.captureDir, adb = graph.adbClient)
+                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.useSystemTitleBar, settings.captureDir, adb = graph.adbClient)
             }
         }
         if (shuttingDown?.finishingRecording == true) FinishingRecordingWindow(settings.themeMode)
+    }
+}
+
+/** The main window's custom title bar: app icon on Windows (macOS and Linux show none), then the name. */
+@Composable
+private fun MainTitle() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (Os.isWindows) {
+            Image(AppIcon.painter, contentDescription = null, Modifier.padding(start = 12.dp, end = 8.dp).size(16.dp))
+        }
+        Text(appTitle(), style = MaterialTheme.typography.titleSmall)
     }
 }
 

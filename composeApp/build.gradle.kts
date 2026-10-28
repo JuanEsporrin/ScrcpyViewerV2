@@ -10,6 +10,28 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
 }
 
+// Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
+val appVersion = "1.3.0"
+
+val generateAppVersion = tasks.register("generateAppVersion") {
+    val version = appVersion
+    val outDir = layout.buildDirectory.dir("generated/appVersion/kotlin")
+    inputs.property("version", version)
+    outputs.dir(outDir)
+    doLast {
+        val file = outDir.get().file("com/programmersbox/scrcpyviewer/AppVersion.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            package com.programmersbox.scrcpyviewer
+
+            internal const val APP_VERSION = "$version"
+
+            """.trimIndent()
+        )
+    }
+}
+
 val hostClassifier: String = run {
     val os = System.getProperty("os.name").lowercase()
     val arch = System.getProperty("os.arch").lowercase()
@@ -26,6 +48,7 @@ kotlin {
     jvm()
 
     sourceSets {
+        jvmMain { kotlin.srcDir(generateAppVersion) }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(compose.material3)
@@ -36,6 +59,7 @@ kotlin {
             implementation(libs.material3.adaptive)
             implementation(libs.material3.adaptive.layout)
             implementation(libs.qrose)
+            implementation(libs.jewel.decorated.window)
             val ffmpeg = libs.versions.ffmpeg.get()
             val javacpp = libs.versions.javacpp.get()
             implementation("org.bytedeco:ffmpeg:$ffmpeg")
@@ -49,13 +73,36 @@ kotlin {
     }
 }
 
+// Run / packaging tasks (run, runDistributable, hot-reload runs, package*, create*Distributable, *RuntimeImage,
+// suggestRuntimeModules, prepareAppResources), matched on the requested names with any ":project:" prefix dropped.
+val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested ->
+    val name = requested.substringAfterLast(':')
+    listOf("run", "package", "Distributable", "RuntimeImage", "suggestRuntimeModules", "prepareAppResources")
+        .any { name.contains(it, ignoreCase = true) }
+}
+
 compose.desktop {
     application {
         mainClass = "com.programmersbox.scrcpyviewer.MainKt"
+        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
+        // so the app runs on JBR 25; Gradle auto-provisions it via foojay. Compilation stays on jvmToolchain(21).
+        // javaHome is a plain String, so resolve JBR 25 only when a run or packaging task is requested; tests,
+        // CI test jobs and IDE sync then never download it.
+        if (needsAppRuntime) {
+            javaHome = javaToolchains.launcherFor {
+                languageVersion.set(JavaLanguageVersion.of(25))
+                vendor.set(JvmVendorSpec.JETBRAINS)
+            }.get().metadata.installationPath.asFile.absolutePath
+        }
+        // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
+        jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        // It also warns when javacpp's indexers call the terminally deprecated sun.misc.Unsafe memory methods.
+        jvmArgs += "--sun-misc-unsafe-memory-access=allow"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
-            packageVersion = "1.2.1"
+            modules("java.instrument", "java.management", "jdk.unsupported")
+            packageVersion = appVersion
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS {
                 iconFile.set(project.file("icons/icon.icns"))

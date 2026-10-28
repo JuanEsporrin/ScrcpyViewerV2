@@ -78,6 +78,9 @@ class SettingsViewModel(
 
     fun setTheme(mode: ThemeMode) = appSettings.update { it.copy(themeMode = mode) }
 
+    /** Read when a window opens, so it applies to windows opened after this. */
+    fun setUseSystemTitleBar(value: Boolean) = appSettings.update { it.copy(useSystemTitleBar = value) }
+
     /** `null` clears the default preset. */
     fun setDefaultPreset(id: String?) = presets.setDefault(id)
 
