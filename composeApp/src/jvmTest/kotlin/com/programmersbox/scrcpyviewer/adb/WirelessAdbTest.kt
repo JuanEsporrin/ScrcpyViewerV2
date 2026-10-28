@@ -73,6 +73,21 @@ class WirelessAdbTest {
     }
 
     @Test
+    fun `mdnsServices adds services only the extra discovery found`() = runBlocking {
+        val client = FakeClient {
+            ProcessResult(0, "List of discovered mdns services\nadb-A-x\t_adb-tls-connect._tcp\t10.0.0.5:37000\n", "")
+        }
+        val extra = listOf(
+            MdnsService("adb-A-x", MdnsType.Connect, "10.0.0.5:37000"),
+            MdnsService("adb-B-y", MdnsType.Pairing, "10.0.28.169:41877"),
+        )
+        assertEquals(
+            listOf(MdnsService("adb-A-x", MdnsType.Connect, "10.0.0.5:37000"), MdnsService("adb-B-y", MdnsType.Pairing, "10.0.28.169:41877")),
+            WirelessAdb(client, extraDiscovery = { extra }).mdnsServices(),
+        )
+    }
+
+    @Test
     fun `mdnsServices swallows failures`() = runBlocking {
         val client = FakeClient { throw IOException("boom") }
         assertEquals(emptyList(), WirelessAdb(client).mdnsServices())

@@ -1,0 +1,73 @@
+package com.programmersbox.scrcpyviewer.adb
+
+import kotlinx.coroutines.runBlocking
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+/** Output samples are real `dns-sd` output captured on macOS 27. */
+class DnsSdDiscoveryTest {
+    private val browse = """
+        Browsing for _adb-tls-pairing._tcp.local.
+        DATE: ---Wed 28 Oct 2026---
+         9:17:29.099  ...STARTING...
+        Timestamp     A/R    Flags  if Domain               Service Type         Instance Name
+         9:17:29.099  Add        3   1 local.               _adb-tls-pairing._tcp. adb-TESTSERIAL-abc123
+         9:17:29.099  Add        3  23 local.               _adb-tls-pairing._tcp. adb-TESTSERIAL-abc123
+         9:17:29.099  Add        2  15 local.               _adb-tls-pairing._tcp. adb-TESTSERIAL-abc123
+         9:17:29.291  Add        2  15 local.               _adb-tls-pairing._tcp. adb-R5CX12GDWPZ-tKl7wT
+         9:17:30.001  Rmv        0  15 local.               _adb-tls-pairing._tcp. adb-TESTSERIAL-abc123
+    """.trimIndent().lines()
+
+    private val lookup = """
+        Lookup adb-R5CX12GDWPZ-tKl7wT._adb-tls-pairing._tcp.local.
+        DATE: ---Wed 28 Oct 2026---
+         9:17:31.113  ...STARTING...
+         9:17:31.113  adb-R5CX12GDWPZ-tKl7wT._adb-tls-pairing._tcp.local. can be reached at Android-2.local.:41877 (interface 15) Flags: 1
+    """.trimIndent().lines()
+
+    private val address = """
+        DATE: ---Wed 28 Oct 2026---
+         9:17:33.140  ...STARTING...
+        Timestamp     A/R  Flags         IF  Hostname                               Address                                      TTL
+         9:17:33.141  Add  40000003       1  Android-2.local.                       127.0.0.1                                    4500
+         9:17:33.141  Add  40000003      23  Android-2.local.                       10.0.4.99                                    4500
+         9:17:33.141  Add  40000002      15  Android-2.local.                       10.0.28.169                                  4500
+    """.trimIndent().lines()
+
+    @Test
+    fun `browse keeps added names minus removed ones`() {
+        assertEquals(listOf("adb-R5CX12GDWPZ-tKl7wT"), DnsSdParsers.browseNames(browse))
+    }
+
+    @Test
+    fun `lookup gives host port and interface`() {
+        assertEquals(DnsSdParsers.Target("Android-2.local.", 41877, 15), DnsSdParsers.target(lookup))
+        assertNull(DnsSdParsers.target(lookup.take(3)))
+    }
+
+    @Test
+    fun `address prefers the lookup interface and skips loopback`() {
+        assertEquals("10.0.28.169", DnsSdParsers.address(address, interfaceIndex = 15))
+        assertEquals("10.0.4.99", DnsSdParsers.address(address, interfaceIndex = 99))
+        assertNull(DnsSdParsers.address(address.take(3), interfaceIndex = 15))
+    }
+
+    @Test
+    fun `services browses resolves and maps types`() = runBlocking {
+        val calls = mutableListOf<List<String>>()
+        val discovery = DnsSdDiscovery { args, _, _ ->
+            calls += args
+            when {
+                args[0] == "-B" && args[1] == "_adb-tls-pairing._tcp" -> browse
+                args[0] == "-B" -> emptyList()
+                args[0] == "-L" -> lookup
+                else -> address
+            }
+        }
+        assertEquals(listOf(MdnsService("adb-R5CX12GDWPZ-tKl7wT", MdnsType.Pairing, "10.0.28.169:41877")), discovery.services())
+        // A second poll reuses the resolved address while the phone is still advertised.
+        discovery.services()
+        assertEquals(1, calls.count { it[0] == "-L" })
+    }
+}

@@ -29,6 +29,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
+import com.programmersbox.scrcpyviewer.adb.DnsSdDiscovery
 import com.programmersbox.scrcpyviewer.adb.WirelessAdb
 import com.programmersbox.scrcpyviewer.adb.optionsKey
 import com.programmersbox.scrcpyviewer.media.AudioPlayer
@@ -81,7 +82,7 @@ class AppGraph(
     /** Serials the user asked to mirror (double-click or Mirror button). Consumed by the mirror window host. */
     val mirrorRequests = MutableSharedFlow<String>(extraBufferCapacity = 16)
 
-    val wirelessAdb = WirelessAdb(adbClient)
+    val wirelessAdb = WirelessAdb(adbClient, extraDiscovery = if (Os.isMac) DnsSdDiscovery()::services else null)
 
     val devicesViewModel = DevicesViewModel(
         deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests, wirelessAdb,

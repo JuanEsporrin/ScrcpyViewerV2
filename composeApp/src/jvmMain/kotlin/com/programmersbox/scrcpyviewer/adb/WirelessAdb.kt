@@ -15,10 +15,18 @@ sealed interface SwitchResult {
 open class WirelessAdb(
     private val client: AdbClient,
     private val retryDelayMs: Long = 1000,
+    /** Discovery used alongside adb's own (e.g. macOS `dns-sd`); its services are added when adb missed them. */
+    private val extraDiscovery: (suspend () -> List<MdnsService>)? = null,
 ) {
-    /** Services from `adb mdns services`; empty when adb fails. */
-    open suspend fun mdnsServices(): List<MdnsService> = try {
-        WirelessParsers.mdnsServices(client.exec("mdns", "services").stdout)
+    /** Services from `adb mdns services` plus [extraDiscovery]; failures count as nothing found. */
+    open suspend fun mdnsServices(): List<MdnsService> {
+        val fromAdb = safely { WirelessParsers.mdnsServices(client.exec("mdns", "services").stdout) }
+        val extra = extraDiscovery?.let { safely { it() } }.orEmpty()
+        return (fromAdb + extra).distinctBy { it.name to it.type }
+    }
+
+    private inline fun safely(block: () -> List<MdnsService>): List<MdnsService> = try {
+        block()
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
