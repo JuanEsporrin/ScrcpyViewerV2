@@ -160,7 +160,7 @@ fun main() {
         val mainChrome = remember { windowChrome(settings.useSystemTitleBar) }
         AppWindow(
             onCloseRequest = shutdown::request,
-            title = "Scrcpy Viewer",
+            title = appTitle(),
             themeMode = settings.themeMode,
             chrome = mainChrome,
             visible = shuttingDown == null,
@@ -184,7 +184,7 @@ private fun MainTitle() {
         if (Os.isWindows) {
             Image(AppIcon.painter, contentDescription = null, Modifier.padding(start = 12.dp, end = 8.dp).size(16.dp))
         }
-        Text("Scrcpy Viewer", style = MaterialTheme.typography.titleSmall)
+        Text(appTitle(), style = MaterialTheme.typography.titleSmall)
     }
 }
 

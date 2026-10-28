@@ -10,6 +10,28 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
 }
 
+// Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
+val appVersion = "1.3.0"
+
+val generateAppVersion = tasks.register("generateAppVersion") {
+    val version = appVersion
+    val outDir = layout.buildDirectory.dir("generated/appVersion/kotlin")
+    inputs.property("version", version)
+    outputs.dir(outDir)
+    doLast {
+        val file = outDir.get().file("com/programmersbox/scrcpyviewer/AppVersion.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            package com.programmersbox.scrcpyviewer
+
+            internal const val APP_VERSION = "$version"
+
+            """.trimIndent()
+        )
+    }
+}
+
 val hostClassifier: String = run {
     val os = System.getProperty("os.name").lowercase()
     val arch = System.getProperty("os.arch").lowercase()
@@ -26,6 +48,7 @@ kotlin {
     jvm()
 
     sourceSets {
+        jvmMain { kotlin.srcDir(generateAppVersion) }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(compose.material3)
@@ -65,7 +88,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
             modules("java.instrument", "java.management", "jdk.unsupported")
-            packageVersion = "1.2.0"
+            packageVersion = appVersion
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS {
                 iconFile.set(project.file("icons/icon.icns"))
