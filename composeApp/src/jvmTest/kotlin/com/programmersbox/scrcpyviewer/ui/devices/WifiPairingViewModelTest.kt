@@ -150,6 +150,21 @@ class WifiPairingViewModelTest {
     }
 
     @Test
+    fun `blocked server offers Restart adb in the dialog`() = runBlocking {
+        val vm = vm()
+        wireless.connectResult = AdbOutcome.Failed("No route to host", restartCanFix = true)
+        vm.selectTab(PairingTab.Ip)
+        vm.setIp("10.0.24.47")
+        vm.submit()
+        awaitState(vm) { it.error != null && !it.busy }
+        assertTrue(vm.state.value.canRestartAdb)
+        vm.restartAdb()
+        awaitState(vm) { !it.busy && !it.canRestartAdb }
+        assertTrue("restart" in wireless.calls)
+        assertNull(vm.state.value.error)
+    }
+
+    @Test
     fun `close cancels polling`() = runBlocking {
         val vm = vm()
         withTimeout(3000) { while (polls.get() < 2) delay(5) }

@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.adb
 
+import com.programmersbox.scrcpyviewer.Os
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -8,7 +9,7 @@ sealed interface SwitchResult {
     data class Connected(val address: String) : SwitchResult
     data object NotOnWifi : SwitchResult
     data class TcpipFailed(val message: String) : SwitchResult
-    data class ConnectFailed(val address: String, val message: String) : SwitchResult
+    data class ConnectFailed(val address: String, val message: String, val restartCanFix: Boolean = false) : SwitchResult
 }
 
 /** Wireless debugging commands (pair, connect, mDNS discovery, `tcpip`) run through [client]. */
@@ -17,6 +18,9 @@ open class WirelessAdb(
     private val retryDelayMs: Long = 1000,
     /** Discovery used alongside adb's own (e.g. macOS `dns-sd`); its services are added when adb missed them. */
     private val extraDiscovery: (suspend () -> List<MdnsService>)? = null,
+    private val mac: Boolean = Os.isMac,
+    /** Whether the adb server may be restarted without asking (it drops every adb connection, e.g. open mirrors). */
+    private val canRestartServer: () -> Boolean = { true },
 ) {
     /** Services from `adb mdns services` plus [extraDiscovery]; failures count as nothing found. */
     open suspend fun mdnsServices(): List<MdnsService> {
@@ -33,13 +37,34 @@ open class WirelessAdb(
         emptyList()
     }
 
-    open suspend fun pair(address: String, code: String): AdbOutcome = guarded {
-        val result = client.execWithTimeout(PAIR_TIMEOUT_MS, "pair", address, code) ?: return@guarded AdbOutcome.Failed("timed out")
-        WirelessParsers.pairOutcome(result)
+    open suspend fun pair(address: String, code: String): AdbOutcome = withServerRestart {
+        guarded {
+            val result = client.execWithTimeout(PAIR_TIMEOUT_MS, "pair", address, code) ?: return@guarded AdbOutcome.Failed("timed out")
+            WirelessParsers.pairOutcome(result)
+        }
     }
 
-    open suspend fun connect(address: String): AdbOutcome = guarded {
-        WirelessParsers.connectOutcome(client.exec("connect", address).stdout)
+    open suspend fun connect(address: String): AdbOutcome = withServerRestart {
+        guarded { WirelessParsers.connectOutcome(client.exec("connect", address).stdout) }
+    }
+
+    /** Restarts the adb server so this app owns it (the "Restart adb" action). */
+    open suspend fun restartServer() = client.restartServer()
+
+    /**
+     * On macOS, Local Network privacy blocks an adb server started by another app (or an older build of this one):
+     * connects fail with "No route to host" and pairing with a status-message protocol fault. When this app did not
+     * start the server, restart it and try once more; when that is not allowed right now, flag the failure instead.
+     */
+    private suspend fun withServerRestart(op: suspend () -> AdbOutcome): AdbOutcome {
+        val first = op()
+        if (!mac || client.startedServer || first !is AdbOutcome.Failed || BLOCKED.none { it in first.message }) return first
+        if (!canRestartServer()) return first.copy(restartCanFix = true)
+        guarded {
+            client.restartServer()
+            AdbOutcome.Ok
+        }.let { if (it is AdbOutcome.Failed) return first }
+        return op()
     }
 
     /**
@@ -88,7 +113,8 @@ open class WirelessAdb(
             last = connect(address)
             if (last == AdbOutcome.Ok) return SwitchResult.Connected(address)
         }
-        return SwitchResult.ConnectFailed(address, (last as? AdbOutcome.Failed)?.message ?: "unknown error")
+        val failed = last as? AdbOutcome.Failed
+        return SwitchResult.ConnectFailed(address, failed?.message ?: "unknown error", failed?.restartCanFix ?: false)
     }
 
     private inline fun guarded(block: () -> AdbOutcome): AdbOutcome = try {
@@ -104,5 +130,6 @@ open class WirelessAdb(
         const val TCPIP_PORT = 5555
         const val CONNECT_ATTEMPTS = 5
         const val MDNS_CONNECT_SUFFIX = "._adb-tls-connect._tcp"
+        val BLOCKED = listOf("No route to host", "couldn't read status message")
     }
 }

@@ -82,7 +82,12 @@ class AppGraph(
     /** Serials the user asked to mirror (double-click or Mirror button). Consumed by the mirror window host. */
     val mirrorRequests = MutableSharedFlow<String>(extraBufferCapacity = 16)
 
-    val wirelessAdb = WirelessAdb(adbClient, extraDiscovery = if (Os.isMac) DnsSdDiscovery()::services else null)
+    val wirelessAdb = WirelessAdb(
+        adbClient,
+        extraDiscovery = if (Os.isMac) DnsSdDiscovery()::services else null,
+        // Restarting adb ends every mirror session, so only do it unasked while none is open.
+        canRestartServer = { mirrorController.open.value.isEmpty() },
+    )
 
     val devicesViewModel = DevicesViewModel(
         deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests, wirelessAdb,

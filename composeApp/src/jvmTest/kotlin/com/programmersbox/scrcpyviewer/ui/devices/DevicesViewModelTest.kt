@@ -147,6 +147,19 @@ class DevicesViewModelTest {
     }
 
     @Test
+    fun `blocked connect offers Restart adb and restarting reports back`() {
+        devices.value = listOf(pixel)
+        wireless.switchResult = SwitchResult.ConnectFailed("10.0.24.47:5555", "No route to host", restartCanFix = true)
+        val vm = vm()
+        val seen = notices(vm)
+        vm.connectOverWifi("R1")
+        assertEquals(true, seen.single().restartAdb)
+        vm.restartAdb()
+        assertEquals("restart", wireless.calls.last())
+        assertEquals("Restarted adb. Try connecting again.", seen.last().text)
+    }
+
+    @Test
     fun `disconnect failure emits notice`() {
         devices.value = listOf(pixel)
         wireless.disconnectResult = AdbOutcome.Failed("no such device")

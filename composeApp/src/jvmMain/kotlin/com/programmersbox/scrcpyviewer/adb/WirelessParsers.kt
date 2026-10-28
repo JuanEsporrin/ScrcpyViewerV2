@@ -15,7 +15,8 @@ data class MdnsService(val name: String, val type: MdnsType, val address: String
 sealed interface AdbOutcome {
     data object Ok : AdbOutcome
     data object WrongCode : AdbOutcome
-    data class Failed(val message: String) : AdbOutcome
+    /** [restartCanFix]: macOS is likely blocking an adb server another app started; restarting it may fix this. */
+    data class Failed(val message: String, val restartCanFix: Boolean = false) : AdbOutcome
 }
 
 /** Parsers for the text adb prints for its wireless commands. */
