@@ -29,6 +29,8 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
 import com.programmersbox.scrcpyviewer.adb.DeviceTracker
+import com.programmersbox.scrcpyviewer.adb.WirelessAdb
+import com.programmersbox.scrcpyviewer.adb.optionsKey
 import com.programmersbox.scrcpyviewer.media.AudioPlayer
 import com.programmersbox.scrcpyviewer.media.DelayedVideoSink
 import com.programmersbox.scrcpyviewer.media.VideoDecoder
@@ -79,13 +81,15 @@ class AppGraph(
     /** Serials the user asked to mirror (double-click or Mirror button). Consumed by the mirror window host. */
     val mirrorRequests = MutableSharedFlow<String>(extraBufferCapacity = 16)
 
+    val wirelessAdb = WirelessAdb(adbClient)
+
     val devicesViewModel = DevicesViewModel(
-        deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests,
+        deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests, wirelessAdb,
     )
 
     val presetsViewModel = PresetsViewModel(
-        presetStore, deviceOptions, devicesViewModel.selectedSerial,
-        deviceLabel = { serial -> devicesViewModel.state.value.devices.firstOrNull { it.serial == serial }?.let(::deviceTitle) ?: serial },
+        presetStore, deviceOptions, devicesViewModel.selectedOptionsKey,
+        deviceLabel = { key -> devicesViewModel.state.value.devices.firstOrNull { it.optionsKey() == key }?.let(::deviceTitle) ?: key },
         scope = scope,
     )
 
@@ -109,7 +113,10 @@ class AppGraph(
     val mirrorController = MirrorController(
         scope = scope,
         devices = deviceTracker.devices,
-        optionsFor = { serial -> deviceOptions.workingSet(serial).value.values },
+        optionsFor = { serial ->
+            val key = deviceTracker.devices.value.firstOrNull { it.serial == serial }?.optionsKey() ?: serial
+            deviceOptions.workingSet(key).value.values
+        },
         newSession = { serial, values ->
             ScrcpySession(
                 serial, values, serverLauncher,
