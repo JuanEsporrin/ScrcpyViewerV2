@@ -64,8 +64,9 @@ and the setting row on Linux says so ("Window can't be resized from its edges").
 
 ## Constraints and decided "how"
 
-- **Runtime: JetBrains Runtime (JBR) 21** replaces Temurin 21 for the packaged app. JBR provides
+- **Runtime: JetBrains Runtime (JBR) 25** replaces Temurin 21 for the packaged app. JBR provides
   the custom-title-bar hit-testing that gives real native drag / snap / resize. Decided by the user.
+  It must be 25, not 21, because Jewel 0.41 is Java 25 bytecode. Compilation stays on toolchain 21.
 - **Library: Jewel** decorated window, `org.jetbrains.jewel:jewel-int-ui-decorated-window`
   version `0.41.0-262.10968.63` (built against Compose foundation 1.12.0; project uses Compose
   Multiplatform 1.12.2). Use its `DecoratedWindow` + `TitleBar` on all three OSes (one code path,
@@ -73,11 +74,11 @@ and the setting row on Linux says so ("Window can't be resized from its edges").
 - The app's UI stays Material 3. Jewel's theme is only used as far as `DecoratedWindow` /
   `TitleBar` require; title-bar colours are fed from the current `MaterialTheme.colorScheme`, so
   nothing else in the app changes look.
-- Packaging: CI (`.github/workflows/build.yml`, currently `actions/setup-java` with
-  `distribution: temurin`, `java-version: "21"`) switches the packaging JDK to JBR 21
-  (`setup-java` supports `distribution: jetbrains`). Local `createDistributable` / `package*`
-  must also run on JBR. Tests may keep running on any JDK 21.
-- Graceful fallback: when not running on JBR (tests, `./gradlew run` on a stock JDK), windows
+- Packaging: `compose.desktop.application.javaHome` resolves JBR 25 through Gradle toolchains
+  (foojay auto-provisioning), only when a run or packaging task is requested. CI
+  (`.github/workflows/build.yml`, `actions/setup-java` with `distribution: temurin`,
+  `java-version: "21"`) stays unchanged. Tests keep running on toolchain 21 and never resolve JBR 25.
+- Graceful fallback: when the runtime can't load Jewel (tests, a stock JDK, or JBR 21), windows
   must still open and work, using the system title bar.
 - ProGuard: not used by the shipped installers today (CI runs `packageDmg` / `packageMsi` /
   `packageDeb`). ProGuard lives only in open PR #3. Not part of this work; if PR #3 merges, Jewel /

@@ -4,9 +4,9 @@
 
 **Goal:** Paint the main and mirror windows' title bars in the app's Material 3 `surfaceContainer` colour with native drag / snap / resize, via JetBrains Runtime + Jewel `DecoratedWindow`, with a "Use system title bar" escape hatch (default on for Linux).
 
-**Architecture:** A pure `windowChrome(...)` decision picks `Custom` or `System` per window from the setting, the OS and whether JBR is running. One `AppWindow` composable opens either a Jewel `DecoratedWindow` + `TitleBar` (colours fed from the M3 scheme) or a plain Compose `Window` with the title-bar slot drawn at the top of the content. The mirror window passes its existing top strip as that slot. Packaging uses a JBR 21 launcher resolved through Gradle toolchains (foojay auto-provisioning), so CI and local builds need no manual JDK setup.
+**Architecture:** A pure `windowChrome(...)` decision picks `Custom` or `System` per window from the setting, the OS and whether the runtime can load Jewel (JBR 25+). One `AppWindow` composable opens either a Jewel `DecoratedWindow` + `TitleBar` (colours fed from the M3 scheme) or a plain Compose `Window` with the title-bar slot drawn at the top of the content. The mirror window passes its existing top strip as that slot. Run and packaging use a JBR 25 launcher (Jewel 0.41 is Java 25 bytecode) resolved through Gradle toolchains (foojay auto-provisioning), only when a run or packaging task is requested, so CI and local builds need no manual JDK setup.
 
-**Tech Stack:** Kotlin 2.3.21, Compose Multiplatform 1.12.2 (desktop), Material 3, Jewel `org.jetbrains.jewel:jewel-int-ui-decorated-window:0.41.0-262.10968.63`, JetBrains Runtime 21, kotlin.test.
+**Tech Stack:** Kotlin 2.3.21, Compose Multiplatform 1.12.2 (desktop), Material 3, Jewel `org.jetbrains.jewel:jewel-int-ui-decorated-window:0.41.0-262.10968.63`, JetBrains Runtime 25 (runtime only; compiled with toolchain 21), kotlin.test.
 
 **Spec:** `docs/superpowers/specs/2026-10-28-window-title-bar-design.md`
 
@@ -17,9 +17,9 @@
 - "Use system title bar" default: off on macOS and Windows, on on Linux. Applies to windows opened after the change.
 - Linux setting row hint, verbatim: "Window can't be resized from its edges." General hint, verbatim: "Applies to windows opened after the change. Restart to apply it to this window."
 - `FinishingRecordingWindow` keeps the plain `Window`.
-- Not on JBR (tests, stock-JDK `run`) ⇒ always system title bar; never call `DecoratedWindow` (it throws without JBR).
+- Runtime can't load Jewel (tests, stock JDK, JBR 21) ⇒ always system title bar; never call `DecoratedWindow` (it throws without JBR).
 - No changes to nav rail contents, mirror toolbar contents, or theme colours.
-- Packaging JDK: JBR 21. Tests keep the existing `jvmToolchain(21)`.
+- Run / packaging JDK: JBR 25, resolved only for run and packaging tasks. Compilation and tests keep the existing `jvmToolchain(21)`.
 
 ## Review Focus
 
@@ -27,7 +27,7 @@
 2. Mirror auto-fit sizing (`MirrorWindow.kt:588-608`, chrome measured from window minus stage) must converge with the new bar height, not grow every frame. → Task 4 manual step.
 3. Theme switch while windows are open: bar recolours immediately, including inactive-window colour. → Task 3 test on `titleBarColors`.
 4. Settings file written by an older version (no `useSystemTitleBar` key) must load with the OS default, and a corrupt value must fall back to defaults. → Task 2 test.
-5. Running from a stock JDK (`./gradlew run` without JBR, or tests) must open windows with the system bar instead of crashing. → Task 2 test on `windowChrome(jbr = false)`.
+5. Running on a runtime that can't load Jewel (stock JDK, JBR 21, or tests) must open windows with the system bar instead of crashing. → Task 2 test on `windowChrome(supported = false)` and `jewelUsable`.
 
 ---
 
@@ -39,15 +39,15 @@
 - Modify: `composeApp/build.gradle.kts` (dependency; `compose.desktop.application.javaHome`; `modules(...)` if needed)
 
 **Interfaces:**
-- Produces: `libs.jewel.decorated.window` on the `jvmMain` classpath; packaged app and `run` task launched on JBR 21.
+- Produces: `libs.jewel.decorated.window` on the `jvmMain` classpath; packaged app and `run` task launched on JBR 25.
 
 - [ ] **Step 1: Add the foojay resolver** — `plugins { id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0" }` in `settings.gradle.kts`.
 - [ ] **Step 2: Add Jewel** to the catalog and `jvmMain.dependencies { implementation(libs.jewel.decorated.window) }`.
-- [ ] **Step 3: Point packaging at JBR** — in `compose.desktop { application { ... } }` set `javaHome` to `javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)); vendor.set(JvmVendorSpec.JETBRAINS) }.get().metadata.installationPath.asFile.absolutePath`, with a one-line comment saying why (custom title bar needs JBR). This doubles as the local-build documentation (the repo has no README).
+- [ ] **Step 3: Point packaging at JBR** — in `compose.desktop { application { ... } }` set `javaHome` to `javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)); vendor.set(JvmVendorSpec.JETBRAINS) }.get().metadata.installationPath.asFile.absolutePath`, only when a requested task is a run or packaging task, with a comment saying why (custom title bar needs JBR; Jewel 0.41 is Java 25 bytecode; tests and IDE sync shouldn't download it). This doubles as the local-build documentation (the repo has no README).
 - [ ] **Step 4: Check runtime modules** — run `./gradlew :composeApp:suggestRuntimeModules`; add any modules it lists that `nativeDistributions` lacks via `modules(...)`.
 - [ ] **Step 5: Verify**
-  Run: `./gradlew :composeApp:createDistributable && grep IMPLEMENTOR composeApp/build/compose/binaries/main/app/ScrcpyViewer.app/Contents/runtime/Contents/Home/release`
-  Expected: build succeeds; `IMPLEMENTOR="JetBrains s.r.o."`.
+  Run: `./gradlew :composeApp:createDistributable && grep JAVA_VERSION composeApp/build/compose/binaries/main/app/ScrcpyViewer.app/Contents/runtime/Contents/Home/release`
+  Expected: build succeeds; `JAVA_VERSION="25.…"` (the jlinked image has no IMPLEMENTOR line).
   Run: `./gradlew :composeApp:jvmTest` → PASS (unchanged).
 - [ ] **Step 6: Commit** — `build: package on JetBrains Runtime and add Jewel decorated window`
 
@@ -68,20 +68,20 @@ CI (`.github/workflows/build.yml`) needs no change: the toolchain is auto-provis
   - `Settings.useSystemTitleBar: Boolean? = null` (null = OS default)
   - `enum class WindowChrome { Custom, System }`
   - `fun defaultUseSystemTitleBar(isLinux: Boolean = Os.isLinux): Boolean`
-  - `fun windowChrome(useSystemTitleBar: Boolean?, isLinux: Boolean = Os.isLinux, jbr: Boolean = isJbr()): WindowChrome`
-  - `fun isJbr(): Boolean` (wraps `com.jetbrains.JBR.isAvailable()`, false on any `Throwable`)
+  - `fun windowChrome(useSystemTitleBar: Boolean?, isLinux: Boolean = Os.isLinux, supported: Boolean = customTitleBarSupported): WindowChrome`
+  - `val customTitleBarSupported: Boolean` (lazy: `com.jetbrains.JBR.isAvailable()`, Java feature >= 25 via `internal fun jewelUsable(jbrAvailable, javaFeature)`, and Jewel's window class loads; false on any `Throwable`)
 
 - [ ] **Step 1: Write the failing tests**
 
 ```kotlin
 // WindowChromeTest
-@Test fun `macOS and Windows default to custom`() = assertEquals(WindowChrome.Custom, windowChrome(null, isLinux = false, jbr = true))
-@Test fun `Linux defaults to system`() = assertEquals(WindowChrome.System, windowChrome(null, isLinux = true, jbr = true))
+@Test fun `macOS and Windows default to custom`() = assertEquals(WindowChrome.Custom, windowChrome(null, isLinux = false, supported = true))
+@Test fun `Linux defaults to system`() = assertEquals(WindowChrome.System, windowChrome(null, isLinux = true, supported = true))
 @Test fun `explicit setting wins over OS default`() {
-    assertEquals(WindowChrome.Custom, windowChrome(false, isLinux = true, jbr = true))
-    assertEquals(WindowChrome.System, windowChrome(true, isLinux = false, jbr = true))
+    assertEquals(WindowChrome.Custom, windowChrome(false, isLinux = true, supported = true))
+    assertEquals(WindowChrome.System, windowChrome(true, isLinux = false, supported = true))
 }
-@Test fun `no JBR always system`() = assertEquals(WindowChrome.System, windowChrome(false, isLinux = false, jbr = false))
+@Test fun `unsupported runtime always system`() = assertEquals(WindowChrome.System, windowChrome(false, isLinux = false, supported = false))
 
 // AppSettingsTest
 @Test fun `useSystemTitleBar absent from older file loads as null`() {
