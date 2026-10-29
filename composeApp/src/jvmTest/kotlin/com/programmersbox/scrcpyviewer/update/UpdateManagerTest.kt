@@ -1,6 +1,12 @@
 package com.programmersbox.scrcpyviewer.update
 
 import com.programmersbox.scrcpyviewer.withFakeAppKoin
+import dev.nucleusframework.updater.DownloadProgress
+import dev.nucleusframework.updater.UpdateEvent
+import dev.nucleusframework.updater.UpdateLevel
+import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.exception.ChecksumException
+import dev.nucleusframework.updater.exception.NetworkException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -9,15 +15,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.io.IOException
+import java.io.File
 import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.Paths
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.io.path.exists
-import kotlin.io.path.readText
-import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,67 +28,25 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class UpdateManagerTest {
-    private val updatesDir: Path = Files.createTempDirectory("updates")
     private val scope = CoroutineScope(Job())
     private val checkedAt = Instant.parse("2026-10-29T12:00:00Z")
-
-    private val updatable = InstallTarget.Updatable(
-        UpdatePlatform.MacArm64,
-        Paths.get("/Applications/ScrcpyViewer.app/Contents/MacOS/ScrcpyViewer"),
-        Paths.get("/Applications/ScrcpyViewer.app"),
-    )
 
     @AfterTest
     fun cleanup() {
         scope.cancel()
-        updatesDir.toFile().deleteRecursively()
-    }
-
-    private fun release(tag: String) = Release(
-        tagName = tag,
-        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/$tag",
-        assets = listOf(
-            ReleaseAsset(
-                name = "ScrcpyViewer-${tag.removePrefix("v")}.dmg",
-                size = 100,
-                downloadUrl = "https://example.invalid/$tag.dmg",
-                digest = "sha256:00",
-            ),
-        ),
-    )
-
-    /** Records calls; [block] decides what each download does. */
-    private inner class FakeDownloader(
-        val block: suspend (onProgress: (Long, Long) -> Unit) -> Path = { onProgress ->
-            onProgress(100, 100)
-            updatesDir.resolve("ScrcpyViewer-1.5.0.dmg")
-        },
-    ) : UpdateDownloader(updatesDir) {
-        val calls = AtomicInteger()
-        val started = CompletableDeferred<Unit>()
-
-        override suspend fun download(asset: ReleaseAsset, version: Version, onProgress: (Long, Long) -> Unit): Path {
-            calls.incrementAndGet()
-            started.complete(Unit)
-            return block(onProgress)
-        }
     }
 
     private fun manager(
-        source: ReleaseSource = ReleaseSource { release("v1.5.0") },
-        downloader: UpdateDownloader = FakeDownloader(),
-        installer: UpdateInstaller = UpdateInstaller(start = {}, hasSetsid = false),
-        target: InstallTarget = updatable,
+        backend: UpdateBackend = FakeUpdateBackend { FakeUpdateBackend.available("1.6.0") },
+        macNotInApplications: Boolean = false,
+        currentVersion: String = "1.5.0",
     ) = UpdateManager(
-        source = source,
-        downloader = downloader,
-        installer = installer,
-        target = target,
-        updatesDir = updatesDir,
+        backend = backend,
         scope = scope,
-        currentVersion = "1.4.0",
-        platform = UpdatePlatform.MacArm64,
+        currentVersion = currentVersion,
         bundledAdbInUse = { null },
+        macNotInApplications = macNotInApplications,
+        repo = "jakepurple13/ScrcpyViewerV2",
         now = { checkedAt },
     )
 
@@ -97,49 +55,50 @@ class UpdateManagerTest {
     private fun UpdateManager.awaitState(predicate: (UpdateState) -> Boolean): UpdateState =
         await { state.first(predicate) }
 
-    private fun UpdateManager.checkAndAwaitAvailable() {
+    private fun UpdateManager.checkAndAwaitAvailable(): Release {
         check(userInitiated = false)
-        awaitState { it is UpdateState.Available }
+        return assertIs<UpdateState.Available>(awaitState { it is UpdateState.Available }).release
     }
 
-    @Test
-    fun `old downloaded version folders are deleted at init`() {
-        for (name in listOf("1.3.0", "1.4.0", "1.5.0", "notes")) {
-            Files.createDirectories(updatesDir.resolve(name))
-            updatesDir.resolve(name).resolve("x.dmg").writeText("x")
-        }
-        updatesDir.resolve("update.log").writeText("log")
-        manager()
-        assertFalse(updatesDir.resolve("1.3.0").exists())
-        assertFalse(updatesDir.resolve("1.4.0").exists())
-        assertTrue(updatesDir.resolve("1.5.0").exists(), "newer version is kept")
-        assertTrue(updatesDir.resolve("notes").exists(), "non-version folder is kept")
-        assertTrue(updatesDir.resolve("update.log").exists())
-    }
+    private val v160 = Release(
+        version = "1.6.0",
+        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.6.0",
+        publishedAt = "2026-10-29T12:00:00.000Z",
+    )
 
     @Test
-    fun `newer release becomes Available`() {
+    fun `Available becomes a release linking to its tag page`() {
         val m = manager()
         m.check(userInitiated = false)
         val state = m.awaitState { it !is UpdateState.Idle && it !is UpdateState.Checking }
-        assertEquals("v1.5.0", assertIs<UpdateState.Available>(state).release.tagName)
-        assertEquals("v1.5.0", m.available.value?.tagName)
+        assertEquals(UpdateState.Available(v160), state)
+        assertEquals(v160, m.available.value)
         assertEquals(checkedAt, m.lastChecked.value)
         assertFalse(m.popupDismissed.value)
     }
 
     @Test
-    fun `same version is UpToDate`() {
-        val m = manager(source = ReleaseSource { release("v1.4.0") })
+    fun `blank release date is dropped`() {
+        val info = FakeUpdateBackend.info("1.6.0", releaseDate = "")
+        assertNull(info.toRelease("o/r").publishedAt)
+        assertEquals("https://github.com/o/r/releases/tag/v1.6.0", info.toRelease("o/r").htmlUrl)
+    }
+
+    @Test
+    fun `NotAvailable is UpToDate and clears a known release`() {
+        var result: UpdateResult = FakeUpdateBackend.available("1.6.0")
+        val m = manager(FakeUpdateBackend { result })
+        m.checkAndAwaitAvailable()
+        result = UpdateResult.NotAvailable
         m.check(userInitiated = true)
-        assertEquals(UpdateState.UpToDate, m.awaitState { it !is UpdateState.Idle && it !is UpdateState.Checking })
+        assertEquals(UpdateState.UpToDate, m.awaitState { it is UpdateState.UpToDate })
         assertNull(m.available.value)
         assertEquals(checkedAt, m.lastChecked.value)
     }
 
     @Test
-    fun `launch check failure is silent`() {
-        val m = manager(source = ReleaseSource { throw UpdateException("GitHub returned HTTP 403") })
+    fun `launch check error is silent`() {
+        val m = manager(FakeUpdateBackend { UpdateResult.Error(NetworkException("HTTP 404 for latest-mac.yml")) })
         m.check(userInitiated = false)
         assertEquals(UpdateState.Idle, m.awaitState { it !is UpdateState.Checking })
         assertNull(m.available.value)
@@ -147,118 +106,92 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `manual check failure shows message`() {
-        val m = manager(source = ReleaseSource { throw UpdateException("GitHub returned HTTP 403") })
+    fun `manual check error shows its message`() {
+        val m = manager(FakeUpdateBackend { UpdateResult.Error(NetworkException("HTTP 404 for latest-mac.yml")) })
         m.check(userInitiated = true)
         assertEquals(
-            UpdateState.Failed("Couldn't check for updates: GitHub returned HTTP 403", null),
+            UpdateState.Failed("Couldn't check for updates: HTTP 404 for latest-mac.yml", null),
             m.awaitState { it is UpdateState.Failed },
         )
     }
 
     @Test
-    fun `manual check failure keeps the known release`() {
-        var fail = false
-        val m = manager(source = ReleaseSource {
-            if (fail) throw UpdateException("GitHub returned HTTP 403") else release("v1.5.0")
-        })
+    fun `thrown check failure is treated like an error`() {
+        val m = manager(FakeUpdateBackend { throw IllegalStateException("boom") })
+        m.check(userInitiated = true)
+        assertEquals("Couldn't check for updates: boom", assertIs<UpdateState.Failed>(m.awaitState { it is UpdateState.Failed }).message)
+    }
+
+    @Test
+    fun `manual check error keeps the known release`() {
+        var result: UpdateResult = FakeUpdateBackend.available("1.6.0")
+        val m = manager(FakeUpdateBackend { result })
         m.checkAndAwaitAvailable()
-        fail = true
+        result = UpdateResult.Error(NetworkException("offline"))
         m.check(userInitiated = true)
         val failed = assertIs<UpdateState.Failed>(m.awaitState { it is UpdateState.Failed })
-        assertEquals("v1.5.0", failed.release?.tagName)
-        assertEquals("v1.5.0", m.available.value?.tagName)
+        assertEquals(v160, failed.release)
+        assertEquals(v160, m.available.value)
     }
 
     @Test
-    fun `check ignored while downloading`() {
-        val checks = AtomicInteger()
-        val downloader = FakeDownloader { awaitCancellation() }
-        val m = manager(
-            source = ReleaseSource {
-                checks.incrementAndGet()
-                release("v1.5.0")
-            },
-            downloader = downloader,
-        )
-        m.checkAndAwaitAvailable()
-        m.startUpdate()
-        assertIs<UpdateState.Downloading>(m.state.value)
-        await { downloader.started.await() }
-
-        m.check(userInitiated = true)
-        m.startUpdate()
-
-        assertIs<UpdateState.Downloading>(m.state.value)
-        assertEquals(1, checks.get())
-        assertEquals(1, downloader.calls.get())
-    }
-
-    @Test
-    fun `cancel returns to Available`() {
-        val downloader = FakeDownloader { awaitCancellation() }
-        val m = manager(downloader = downloader)
-        m.checkAndAwaitAvailable()
-        m.startUpdate()
-        await { downloader.started.await() }
-        m.cancel()
-        assertEquals("v1.5.0", assertIs<UpdateState.Available>(m.state.value).release.tagName)
-    }
-
-    @Test
-    fun `successful download launches installer and goes Installing`() {
-        val started = mutableListOf<List<String>>()
+    fun `download progress maps to Downloading then Installing`() {
         val finish = CompletableDeferred<Unit>()
-        val m = manager(
-            downloader = FakeDownloader { onProgress ->
-                onProgress(40, 100)
-                finish.await()
-                updatesDir.resolve("ScrcpyViewer-1.5.0.dmg")
-            },
-            installer = UpdateInstaller(start = { started += it }, hasSetsid = false),
-        )
-        m.checkAndAwaitAvailable()
-        val release = m.available.value!!
+        val file = File("ScrcpyViewer-1.6.0-mac-arm64.zip")
+        val backend = FakeUpdateBackend(downloadBlock = { emit ->
+            emit(DownloadProgress(40, 100, 40.0))
+            finish.await()
+            emit(DownloadProgress(100, 100, 100.0, file = file))
+        }) { FakeUpdateBackend.available("1.6.0") }
+        val m = manager(backend)
+        val release = m.checkAndAwaitAvailable()
         m.startUpdate()
-        assertEquals(UpdateState.Downloading(release, 40, 100), m.awaitState { it == UpdateState.Downloading(release, 40, 100) })
-        assertEquals(0, started.size)
+        m.awaitState { it == UpdateState.Downloading(release, 40, 100) }
         finish.complete(Unit)
         assertEquals(UpdateState.Installing(release), m.awaitState { it is UpdateState.Installing })
+        assertTrue(backend.installed.isEmpty(), "installs only once main() calls installPending")
 
-        assertEquals(1, started.size)
-        // The helper script bakes in the PID of the request it was given.
-        val script = updatesDir.resolve("update.sh").readText()
-        assertTrue("while kill -0 ${ProcessHandle.current().pid()} " in script)
+        m.installPending()
+        assertEquals(listOf(file), backend.installed)
     }
 
     @Test
-    fun `installer failure becomes Failed and never Installing`() {
-        val m = manager(installer = UpdateInstaller(start = { throw IOException("cannot run /bin/sh") }, hasSetsid = false))
+    fun `installPending does nothing without a download`() {
+        val backend = FakeUpdateBackend { FakeUpdateBackend.available("1.6.0") }
+        manager(backend).installPending()
+        assertTrue(backend.installed.isEmpty())
+    }
+
+    @Test
+    fun `download that ends without a file fails`() {
+        val m = manager(FakeUpdateBackend(downloadBlock = { emit -> emit(DownloadProgress(100, 100, 100.0)) }) {
+            FakeUpdateBackend.available("1.6.0")
+        })
         m.checkAndAwaitAvailable()
         m.startUpdate()
-        val failed = assertIs<UpdateState.Failed>(m.awaitState { it is UpdateState.Failed || it is UpdateState.Installing })
-        assertEquals("cannot run /bin/sh", failed.message)
-        assertEquals("v1.5.0", failed.release?.tagName)
+        assertEquals("Download finished without a file", assertIs<UpdateState.Failed>(m.awaitState { it is UpdateState.Failed }).message)
     }
 
     @Test
-    fun `checksum failure becomes Failed with release kept`() {
-        val m = manager(downloader = FakeDownloader { throw UpdateException("Downloaded file is corrupted (checksum mismatch)") })
+    fun `checksum failure becomes Failed with the release kept`() {
+        val m = manager(FakeUpdateBackend(downloadBlock = { throw ChecksumException("abc", "def") }) {
+            FakeUpdateBackend.available("1.6.0")
+        })
         m.checkAndAwaitAvailable()
         m.startUpdate()
         val failed = assertIs<UpdateState.Failed>(m.awaitState { it is UpdateState.Failed })
-        assertEquals("Downloaded file is corrupted (checksum mismatch)", failed.message)
-        assertEquals("v1.5.0", failed.release?.tagName)
+        assertEquals(v160, failed.release)
+        assertNotNull(failed.message)
         assertNotNull(m.available.value)
     }
 
     @Test
     fun `startUpdate retries from Failed`() {
         var fail = true
-        val m = manager(downloader = FakeDownloader {
-            if (fail) throw UpdateException("Download failed: HTTP 500")
-            updatesDir.resolve("ScrcpyViewer-1.5.0.dmg")
-        })
+        val m = manager(FakeUpdateBackend(downloadBlock = { emit ->
+            if (fail) throw NetworkException("HTTP 500")
+            emit(DownloadProgress(100, 100, 100.0, file = File("a.zip")))
+        }) { FakeUpdateBackend.available("1.6.0") })
         m.checkAndAwaitAvailable()
         m.startUpdate()
         m.awaitState { it is UpdateState.Failed }
@@ -268,14 +201,52 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `startUpdate refused when NotUpdatable`() {
-        val downloader = FakeDownloader()
-        val m = manager(downloader = downloader, target = InstallTarget.NotUpdatable(InstallTarget.Reason.DevBuild))
+    fun `check ignored while downloading`() {
+        val backend = FakeUpdateBackend(downloadBlock = { awaitCancellation() }) { FakeUpdateBackend.available("1.6.0") }
+        val m = manager(backend)
         m.checkAndAwaitAvailable()
-        assertFalse(m.canSelfUpdate(m.available.value!!))
+        m.startUpdate()
+        assertIs<UpdateState.Downloading>(m.state.value)
+        await { backend.downloadStarted.await() }
+
+        m.check(userInitiated = true)
+        m.startUpdate()
+
+        assertIs<UpdateState.Downloading>(m.state.value)
+        assertEquals(1, backend.checks.get())
+        assertEquals(1, backend.downloads.get())
+    }
+
+    @Test
+    fun `cancel returns to Available`() {
+        val backend = FakeUpdateBackend(downloadBlock = { awaitCancellation() }) { FakeUpdateBackend.available("1.6.0") }
+        val m = manager(backend)
+        m.checkAndAwaitAvailable()
+        m.startUpdate()
+        await { backend.downloadStarted.await() }
+        m.cancel()
+        assertEquals(UpdateState.Available(v160), m.state.value)
+    }
+
+    @Test
+    fun `no self update when Nucleus cannot install`() {
+        val backend = FakeUpdateBackend(canInstall = false) { FakeUpdateBackend.available("1.6.0") }
+        val m = manager(backend)
+        m.checkAndAwaitAvailable()
+        assertFalse(m.canSelfUpdate)
         m.startUpdate()
         assertIs<UpdateState.Available>(m.state.value)
-        assertEquals(0, downloader.calls.get())
+        assertEquals(0, backend.downloads.get())
+    }
+
+    @Test
+    fun `no self update from a disk image`() {
+        val backend = FakeUpdateBackend { FakeUpdateBackend.available("1.6.0") }
+        val m = manager(backend, macNotInApplications = true)
+        m.checkAndAwaitAvailable()
+        assertFalse(m.canSelfUpdate)
+        m.startUpdate()
+        assertEquals(0, backend.downloads.get())
     }
 
     @Test
@@ -284,29 +255,63 @@ class UpdateManagerTest {
         m.checkAndAwaitAvailable()
         m.dismissPopup()
         assertTrue(m.popupDismissed.value)
-        assertEquals("v1.5.0", m.available.value?.tagName)
+        assertEquals(v160, m.available.value)
         assertIs<UpdateState.Available>(m.state.value)
     }
 
     @Test
-    fun `previous failure read and deleted`() {
-        val file = updatesDir.resolve("last-error.txt")
-        file.writeText("Install was canceled.\n")
+    fun `marker for this version is a completed update`() {
+        val backend = FakeUpdateBackend(event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR))
+        val m = manager(backend, currentVersion = "1.6.0")
+        assertEquals("1.5.0", m.updatedFrom)
+        assertNull(m.previousFailure)
+        assertEquals(1, backend.eventsConsumed)
+    }
+
+    @Test
+    fun `marker for another version is a failed update`() {
+        val m = manager(FakeUpdateBackend(event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR)), currentVersion = "1.5.0")
+        assertEquals("Updating to 1.6.0 did not complete.", m.previousFailure)
+        assertNull(m.updatedFrom)
+    }
+
+    @Test
+    fun `no marker is neither`() {
         val m = manager()
-        assertEquals("Install was canceled.", m.previousFailure)
-        assertFalse(file.exists())
+        assertNull(m.previousFailure)
+        assertNull(m.updatedFrom)
     }
 
     @Test
-    fun `no previous failure is null`() {
-        assertNull(manager().previousFailure)
+    fun `mac disk image and translocation are outside Applications`() {
+        assertTrue(macRunningOutsideApplications("/Volumes/ScrcpyViewer/ScrcpyViewer.app/Contents/MacOS/ScrcpyViewer", isMac = true))
+        assertTrue(macRunningOutsideApplications("/private/var/folders/x/AppTranslocation/1/d/ScrcpyViewer.app/Contents/MacOS/ScrcpyViewer", isMac = true))
+        assertFalse(macRunningOutsideApplications("/Applications/ScrcpyViewer.app/Contents/MacOS/ScrcpyViewer", isMac = true))
+        assertFalse(macRunningOutsideApplications(null, isMac = true))
+        assertFalse(macRunningOutsideApplications("/Volumes/x", isMac = false))
     }
 
     @Test
-    fun `koin provides an idle UpdateManager`() {
-        withFakeAppKoin { koin ->
-            val m = koin.get<UpdateManager>()
-            assertEquals(UpdateState.Idle, m.state.value)
+    fun `published executable type per OS`() {
+        assertEquals("zip", publishedExecutableType("Mac OS X"))
+        assertEquals("nsis", publishedExecutableType("Windows 11"))
+        assertEquals("deb", publishedExecutableType("Linux"))
+        assertNull(publishedExecutableType("FreeBSD"))
+    }
+
+    @Test
+    fun `koin provides an idle UpdateManager and removes 1_5_0 downloads`() {
+        val dataDir = Files.createTempDirectory("scrcpyviewer-update")
+        try {
+            val legacy = Files.createDirectories(dataDir.resolve("updates/1.6.0"))
+            Files.writeString(legacy.resolve("ScrcpyViewer-1.6.0.dmg"), "x")
+            withFakeAppKoin(dataDir) { koin ->
+                val m = koin.get<UpdateManager>()
+                assertEquals(UpdateState.Idle, m.state.value)
+                assertFalse(Files.exists(dataDir.resolve("updates")))
+            }
+        } finally {
+            dataDir.toFile().deleteRecursively()
         }
     }
 }

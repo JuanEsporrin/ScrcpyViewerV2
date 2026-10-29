@@ -1,17 +1,13 @@
 package com.programmersbox.scrcpyviewer.ui.update
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -30,7 +26,7 @@ import com.programmersbox.scrcpyviewer.update.UpdateState
 
 private const val BYTES_PER_MB = 1_000_000L
 
-internal val Release.versionLabel: String get() = version?.toString() ?: tagName
+internal val Release.versionLabel: String get() = version
 
 internal fun UpdateState.Downloading.progressText() = "Downloading… ${read / BYTES_PER_MB} of ${total / BYTES_PER_MB} MB"
 
@@ -97,19 +93,6 @@ private fun OfferDialog(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (!release.body.isNullOrBlank()) {
-                Text(
-                    release.body,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier
-                        .padding(top = 14.dp)
-                        .fillMaxWidth()
-                        .heightIn(max = 110.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerLowest, MaterialTheme.shapes.medium)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                )
-            }
             if (error != null) {
                 Text(
                     error,
@@ -122,6 +105,11 @@ private fun OfferDialog(
                 Modifier.fillMaxWidth().padding(top = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
+                // The update metadata carries no notes; with self-update the main button doesn't open the page.
+                if (ui.canSelfUpdate) {
+                    TextButton(onClick = { uriHandler.openSafely(ui.releasePageUrl) }) { Text("Release notes") }
+                    Spacer(Modifier.weight(1f))
+                }
                 TextButton(onClick = onLater) { Text("Later") }
                 Button(onClick = if (ui.canSelfUpdate) onUpdate else ({ uriHandler.openSafely(ui.releasePageUrl) })) {
                     Text(if (ui.canSelfUpdate) "Update now" else "Download from GitHub")

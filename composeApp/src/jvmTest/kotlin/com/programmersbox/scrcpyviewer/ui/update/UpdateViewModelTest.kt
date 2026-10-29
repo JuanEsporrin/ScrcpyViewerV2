@@ -1,15 +1,11 @@
 package com.programmersbox.scrcpyviewer.ui.update
 
 import androidx.compose.ui.platform.UriHandler
-import com.programmersbox.scrcpyviewer.update.InstallTarget
-import com.programmersbox.scrcpyviewer.update.Release
-import com.programmersbox.scrcpyviewer.update.ReleaseAsset
-import com.programmersbox.scrcpyviewer.update.ReleaseSource
-import com.programmersbox.scrcpyviewer.update.UpdateDownloader
-import com.programmersbox.scrcpyviewer.update.UpdateInstaller
+import com.programmersbox.scrcpyviewer.update.FakeUpdateBackend
 import com.programmersbox.scrcpyviewer.update.UpdateManager
-import com.programmersbox.scrcpyviewer.update.UpdatePlatform
 import com.programmersbox.scrcpyviewer.update.UpdateState
+import dev.nucleusframework.updater.UpdateEvent
+import dev.nucleusframework.updater.UpdateLevel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,8 +14,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.nio.file.Files
-import java.nio.file.Paths
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,40 +21,28 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class UpdateViewModelTest {
-    private val updatesDir = Files.createTempDirectory("updates-vm")
     private val managerScope = CoroutineScope(Job())
     private val vmScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-
-    private val updatable = InstallTarget.Updatable(
-        UpdatePlatform.MacArm64,
-        Paths.get("/Applications/ScrcpyViewer.app/Contents/MacOS/ScrcpyViewer"),
-        Paths.get("/Applications/ScrcpyViewer.app"),
-    )
-
-    private val release = Release(
-        tagName = "v1.5.0",
-        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.5.0",
-        assets = listOf(ReleaseAsset("ScrcpyViewer-1.5.0.dmg", 100, "https://example.invalid/a.dmg", "sha256:00")),
-    )
 
     @AfterTest
     fun cleanup() {
         managerScope.cancel()
         vmScope.cancel()
-        updatesDir.toFile().deleteRecursively()
     }
 
-    private fun vm(target: InstallTarget = updatable): UpdateViewModel {
+    private fun vm(
+        canInstall: Boolean = true,
+        macNotInApplications: Boolean = false,
+        event: UpdateEvent? = null,
+        currentVersion: String = "1.5.0",
+    ): UpdateViewModel {
         val manager = UpdateManager(
-            source = ReleaseSource { release },
-            downloader = UpdateDownloader(updatesDir),
-            installer = UpdateInstaller(start = {}, hasSetsid = false),
-            target = target,
-            updatesDir = updatesDir,
+            backend = FakeUpdateBackend(canInstall = canInstall, event = event) { FakeUpdateBackend.available("1.6.0") },
             scope = managerScope,
-            currentVersion = "1.4.0",
-            platform = UpdatePlatform.MacArm64,
+            currentVersion = currentVersion,
             bundledAdbInUse = { null },
+            macNotInApplications = macNotInApplications,
+            repo = "jakepurple13/ScrcpyViewerV2",
         )
         return UpdateViewModel(manager, vmScope)
     }
@@ -74,41 +56,54 @@ class UpdateViewModelTest {
     fun `popup shows for a newer release and Later hides it`() {
         val vm = vm()
         assertFalse(vm.state.value.showPopup)
+        assertFalse(vm.state.value.canSelfUpdate, "nothing to update to yet")
         val ui = vm.checkAndAwaitAvailable()
         assertTrue(ui.showPopup)
-        assertEquals("v1.5.0", ui.available?.tagName)
-        assertEquals("1.4.0", ui.currentVersion)
+        assertEquals("1.6.0", ui.available?.version)
+        assertEquals("1.5.0", ui.currentVersion)
         assertTrue(ui.canSelfUpdate)
         vm.later()
         assertFalse(vm.state.value.showPopup)
-        assertEquals("v1.5.0", vm.state.value.available?.tagName)
+        assertEquals("1.6.0", vm.state.value.available?.version)
     }
 
     @Test
-    fun `dev build cannot self update`() {
-        val vm = vm(InstallTarget.NotUpdatable(InstallTarget.Reason.DevBuild))
-        val ui = vm.checkAndAwaitAvailable()
+    fun `dev run or unsupported package offers GitHub instead`() {
+        val ui = vm(canInstall = false).checkAndAwaitAvailable()
+        assertTrue(ui.showPopup)
         assertFalse(ui.canSelfUpdate)
         assertFalse(ui.macNotInApplications)
     }
 
     @Test
-    fun `mac outside Applications is flagged`() {
-        val vm = vm(InstallTarget.NotUpdatable(InstallTarget.Reason.MacNotInApplications))
+    fun `mac outside Applications is flagged and cannot self update`() {
+        val vm = vm(macNotInApplications = true)
         assertTrue(vm.state.value.macNotInApplications)
+        assertFalse(vm.checkAndAwaitAvailable().canSelfUpdate)
     }
 
     @Test
     fun `previous failure reaches the ui state`() {
-        Files.writeString(updatesDir.resolve("last-error.txt"), "Install was canceled.\n")
-        assertEquals("Install was canceled.", vm().state.value.previousFailure)
+        val event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR)
+        assertEquals("Updating to 1.6.0 did not complete.", vm(event = event).state.value.previousFailure)
+    }
+
+    @Test
+    fun `completed update reaches the ui state`() {
+        val event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR)
+        val ui = vm(event = event, currentVersion = "1.6.0").state.value
+        assertEquals("1.5.0", ui.updatedFrom)
+        assertEquals(null, ui.previousFailure)
     }
 
     @Test
     fun `release page url is the release or the latest page`() {
         val vm = vm()
         assertEquals("https://github.com/jakepurple13/ScrcpyViewerV2/releases/latest", vm.state.value.releasePageUrl)
-        assertEquals(release.htmlUrl, vm.checkAndAwaitAvailable().releasePageUrl)
+        assertEquals(
+            "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.6.0",
+            vm.checkAndAwaitAvailable().releasePageUrl,
+        )
     }
 
     @Test

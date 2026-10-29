@@ -7,8 +7,7 @@ import com.programmersbox.scrcpyviewer.ui.update.UpdateDialog
 import com.programmersbox.scrcpyviewer.ui.update.UpdateUiState
 import com.programmersbox.scrcpyviewer.ui.update.UpdateViewModel
 import com.programmersbox.scrcpyviewer.update.Release
-import com.programmersbox.scrcpyviewer.update.ReleaseAsset
-import com.programmersbox.scrcpyviewer.update.ReleaseSource
+import com.programmersbox.scrcpyviewer.update.FakeUpdateBackend
 import com.programmersbox.scrcpyviewer.update.UpdateManager
 import com.programmersbox.scrcpyviewer.update.UpdateState
 import com.programmersbox.scrcpyviewer.withFakeAppKoin
@@ -29,16 +28,14 @@ class UpdateScreenshotTest {
     private val outDir = Paths.get(System.getProperty("user.dir")).resolve("build/screenshots")
 
     private val release = Release(
-        tagName = "v1.5.0",
-        body = "- Auto-update\n- Fix Wi-Fi pairing timeout",
-        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.5.0",
-        assets = listOf(ReleaseAsset("ScrcpyViewer-1.5.0.dmg", 50_000_000, "https://example.invalid/a.dmg")),
+        version = "1.6.0",
+        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.6.0",
     )
 
     private fun ui(state: UpdateState, canSelfUpdate: Boolean = true) = UpdateUiState(
         state = state,
         available = release,
-        currentVersion = "1.4.0",
+        currentVersion = "1.5.0",
         showPopup = true,
         canSelfUpdate = canSelfUpdate,
     )
@@ -68,7 +65,7 @@ class UpdateScreenshotTest {
     @Test
     fun `update previous failure`() = render(
         "update-previous-failure.png",
-        ui(UpdateState.Available(release)).copy(previousFailure = "Install was canceled."),
+        ui(UpdateState.Available(release)).copy(previousFailure = "Updating to 1.6.0 did not complete."),
     )
 
     @Test
@@ -76,7 +73,7 @@ class UpdateScreenshotTest {
         render("update-no-self-update.png", ui(UpdateState.Available(release), canSelfUpdate = false))
 
     @Test
-    fun `rail badge`() = withFakeAppKoin(releaseSource = ReleaseSource { release.copy(tagName = "v9.9.9") }) { koin ->
+    fun `rail badge`() = withFakeAppKoin(updateBackend = FakeUpdateBackend { FakeUpdateBackend.available("9.9.9") }) { koin ->
         val manager = koin.get<UpdateManager>()
         manager.check(false)
         runBlocking { withTimeout(5_000) { manager.state.first { it is UpdateState.Available } } }

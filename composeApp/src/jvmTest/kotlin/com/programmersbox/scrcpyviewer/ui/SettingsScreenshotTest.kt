@@ -48,7 +48,7 @@ class SettingsScreenshotTest {
     }
 
     private val release = Release(
-        tagName = "v1.5.0",
+        version = "1.5.0",
         htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.5.0",
         publishedAt = "2026-10-27T09:00:00Z",
     )
@@ -92,6 +92,12 @@ class SettingsScreenshotTest {
     fun `updates error`() = renderUpdates(
         "settings-updates-error.png",
         updatesUi(UpdateState.Failed("Couldn't check for updates: GitHub returned HTTP 403", null)),
+    )
+
+    @Test
+    fun `updates just updated`() = renderUpdates(
+        "settings-updates-just-updated.png",
+        updatesUi(UpdateState.UpToDate).copy(currentVersion = "1.6.0", updatedFrom = "1.5.0"),
     )
 
     @Test
