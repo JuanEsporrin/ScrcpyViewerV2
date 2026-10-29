@@ -37,6 +37,9 @@ import com.programmersbox.scrcpyviewer.ui.mirror.MirrorWindow
 import com.programmersbox.scrcpyviewer.state.AppSettings
 import com.programmersbox.scrcpyviewer.ui.App
 import com.programmersbox.scrcpyviewer.di.startAppKoin
+import com.programmersbox.scrcpyviewer.update.UpdateManager
+import com.programmersbox.scrcpyviewer.update.UpdateState
+import kotlinx.coroutines.flow.first
 
 fun main() {
     AppIcon.installTaskbarIcon()
@@ -44,6 +47,7 @@ fun main() {
     val appSettings = koin.get<AppSettings>()
     val mirrorController = koin.get<MirrorController>()
     val adbClient = koin.get<AdbClient>()
+    val updateManager = koin.get<UpdateManager>()
     application {
         val settings by appSettings.settings.collectAsState()
         val mirrors by mirrorController.open.collectAsState()
@@ -54,6 +58,12 @@ fun main() {
             onDispose { }
         }
         LaunchedEffect(shutdownState) { shutdown.run() }
+        LaunchedEffect(Unit) { updateManager.check(userInitiated = false) }
+        // The update helper waits for this process to exit before it installs.
+        LaunchedEffect(Unit) {
+            updateManager.state.first { it is UpdateState.Installing }
+            shutdown.request()
+        }
         val shuttingDown = shutdownState as? AppShutdown.State.ShuttingDown
         // Read once: a settings change applies to windows opened later, not this one.
         val mainChrome = remember { windowChrome(settings.useSystemTitleBar) }

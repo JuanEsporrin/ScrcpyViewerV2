@@ -4,6 +4,7 @@ import com.programmersbox.scrcpyviewer.APP_VERSION
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
+import org.koin.core.annotation.Provided
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -12,6 +13,8 @@ import java.time.Duration
 
 class UpdateException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** Where the latest release comes from. Given to Koin at start (tests give one that never touches the network). */
+@Provided
 fun interface ReleaseSource {
     suspend fun latest(): Release
 }
