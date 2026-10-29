@@ -25,9 +25,15 @@ class SettingsViewModelTest {
     private var restarts = 0
     private val bundled = dir.resolve("bundled-adb")
 
-    private fun vm(version: (Path) -> String? = { "1.0.41 (35.0.2)" }) = SettingsViewModel(
-        settings, presets, { bundled }, { version(it) }, { restarts++ }, scope,
-    )
+    private fun adb(bundledAdb: () -> Path = { bundled }, version: (Path) -> String?) = object : SettingsAdb {
+        override fun bundledAdb() = bundledAdb()
+        override suspend fun version(path: Path) = version(path)
+        override fun restartTracker() {
+            restarts++
+        }
+    }
+
+    private fun vm(version: (Path) -> String? = { "1.0.41 (35.0.2)" }) = SettingsViewModel(settings, presets, adb(version = version), scope)
 
     private fun executable(name: String): Path {
         assumePosix()
@@ -92,7 +98,7 @@ class SettingsViewModelTest {
     fun `version is Unknown when adb fails`() {
         val vm = vm { null }
         assertEquals(UNKNOWN_VERSION, vm.state.value.bundledAdbVersion)
-        val broken = SettingsViewModel(settings, presets, { error("missing") }, { null }, {}, scope)
+        val broken = SettingsViewModel(settings, presets, adb(bundledAdb = { error("missing") }, version = { null }), scope)
         assertEquals(UNKNOWN_VERSION, broken.state.value.bundledAdbVersion)
     }
 

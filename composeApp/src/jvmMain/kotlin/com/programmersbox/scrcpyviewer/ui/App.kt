@@ -28,11 +28,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import com.programmersbox.scrcpyviewer.AppGraph
+import com.programmersbox.scrcpyviewer.state.AppSettings
 import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
+import com.programmersbox.scrcpyviewer.ui.devices.DevicesViewModel
+import com.programmersbox.scrcpyviewer.ui.mirror.MirrorController
 import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavDisplay
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavigator
@@ -40,10 +42,14 @@ import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelRoute
 import com.programmersbox.scrcpyviewer.ui.onboarding.OnboardingDialog
 import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
+import com.programmersbox.scrcpyviewer.ui.presets.PresetsViewModel
 import com.programmersbox.scrcpyviewer.ui.settings.AwtSettingsFileDialogs
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsScreen
+import com.programmersbox.scrcpyviewer.ui.settings.SettingsViewModel
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import kotlinx.coroutines.flow.filter
+import org.koin.compose.koinInject
+import org.koin.compose.viewmodel.koinViewModel
 
 private val TopLevelRoute.label: String
     get() = when (this) {
@@ -61,23 +67,28 @@ private val TopLevelRoute.icon: ImageVector
 
 /**
  * The main window's content. [navigator] and the pane states are hoisted (tests pass their own);
- * the pane states live above the navigation so divider positions survive tab switches.
+ * the pane states and ViewModels live above the navigation so divider positions and screen state survive tab switches.
  */
 @Composable
 fun App(
-    graph: AppGraph,
     navigator: TopLevelNavigator = remember { TopLevelNavigator() },
     devicesPanes: ListDetailPanes = rememberListDetailPanes(),
     presetsPanes: ListDetailPanes = rememberListDetailPanes(),
+    devicesViewModel: DevicesViewModel = koinViewModel(),
+    presetsViewModel: PresetsViewModel = koinViewModel(),
+    settingsViewModel: SettingsViewModel = koinViewModel(),
+    mirrorController: MirrorController = koinInject(),
+    appSettings: AppSettings = koinInject(),
 ) {
-    val settings by graph.settings.settings.collectAsState()
+    // Read from the store, not the ViewModel's state, so the first frame already has the saved theme.
+    val settings by appSettings.settings.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val fileDialogs = remember { AwtPresetFileDialogs() }
     val settingsDialogs = remember { AwtSettingsFileDialogs() }
     // Recordings that end with no mirror window open for their device (closed window, app-wide view).
-    LaunchedEffect(Unit) {
-        graph.mirrorController.recordingResults
-            .filter { it.serial !in graph.mirrorController.open.value }
+    LaunchedEffect(mirrorController) {
+        mirrorController.recordingResults
+            .filter { it.serial !in mirrorController.open.value }
             .collect { snackbar.showSnackbar(recordResultMessage(it.result)) }
     }
     ScrcpyViewerTheme(settings.themeMode) {
@@ -98,19 +109,18 @@ fun App(
                         TopLevelNavDisplay(navigator) { route ->
                             when (route) {
                                 TopLevelRoute.Devices -> DevicesScreen(
-                                    graph.devicesViewModel,
-                                    graph.wirelessAdb,
+                                    devicesViewModel,
                                     panes = devicesPanes
                                 )
 
                                 TopLevelRoute.Presets -> PresetsScreen(
-                                    graph.presetsViewModel,
+                                    presetsViewModel,
                                     fileDialogs,
                                     panes = presetsPanes
                                 )
 
                                 TopLevelRoute.Settings -> SettingsScreen(
-                                    graph.settingsViewModel,
+                                    settingsViewModel,
                                     settingsDialogs
                                 )
                             }
@@ -127,7 +137,7 @@ fun App(
                     OnboardingDialog(
                         page = page,
                         onPage = { page = it },
-                        onFinish = { graph.settings.update { it.copy(onboardingSeen = true) } },
+                        onFinish = settingsViewModel::finishOnboarding,
                     )
                 }
             }

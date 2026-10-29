@@ -1,9 +1,15 @@
 package com.programmersbox.scrcpyviewer.ui.settings
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.programmersbox.scrcpyviewer.adb.DeviceTracker
+import com.programmersbox.scrcpyviewer.di.AdbClientFactory
 import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.AppSettings
 import com.programmersbox.scrcpyviewer.state.Settings
+import com.programmersbox.scrcpyviewer.tools.BundledTools
+import com.programmersbox.scrcpyviewer.ui.common.defaultViewModelScope
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +21,8 @@ import kotlinx.coroutines.launch
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import org.koin.core.annotation.KoinViewModel
+import org.koin.core.annotation.Singleton
 
 const val UNKNOWN_VERSION = "Unknown"
 
@@ -47,18 +55,41 @@ fun parseAdbVersion(output: String): String? {
     return if (build != null) "$protocol ($build)" else protocol
 }
 
-/**
- * [adbVersion] returns the parsed version of the adb at a path (null on failure); [bundledAdb] resolves the bundled
- * executable (may throw); [restartTracker] is called when the effective adb path changes.
- */
+/** The adb side of the Settings screen. */
+interface SettingsAdb {
+    /** The bundled adb executable; may throw. */
+    fun bundledAdb(): Path
+
+    /** The parsed version of the adb at [path]; null on failure. */
+    suspend fun version(path: Path): String?
+
+    /** Called when the effective adb path changes. */
+    fun restartTracker()
+}
+
+@Singleton
+class AppSettingsAdb(
+    private val tools: BundledTools,
+    private val adbClientFactory: AdbClientFactory,
+    private val tracker: DeviceTracker,
+) : SettingsAdb {
+    override fun bundledAdb(): Path = tools.adbExecutable()
+
+    override suspend fun version(path: Path): String? {
+        val result = adbClientFactory.create { path }.exec("version")
+        return if (result.exitCode == 0) parseAdbVersion(result.stdout) else null
+    }
+
+    override fun restartTracker() = tracker.restart()
+}
+
+@KoinViewModel
 class SettingsViewModel(
     private val appSettings: AppSettings,
     private val presets: PresetStore,
-    private val bundledAdb: () -> Path,
-    private val adbVersion: suspend (Path) -> String?,
-    private val restartTracker: () -> Unit,
-    private val scope: CoroutineScope,
-) {
+    private val adb: SettingsAdb,
+    scope: CoroutineScope = defaultViewModelScope(),
+) : ViewModel(scope) {
     private val bundledVersion = MutableStateFlow<String?>(null)
     private val customVersion = MutableStateFlow<String?>(null)
     private val adbError = MutableStateFlow<String?>(null)
@@ -69,10 +100,10 @@ class SettingsViewModel(
         SettingsUiState(settings, list, defaultId, bundled, if (settings.adbPathOverride != null) custom else null)
     }.combine(adbError) { s, e -> s.copy(adbPathError = e) }
         .combine(appSettings.persistenceError) { s, e -> s.copy(persistenceError = e) }
-        .stateIn(scope, SharingStarted.Eagerly, SettingsUiState())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUiState())
 
     init {
-        scope.launch { bundledVersion.value = versionOf { bundledAdb() } }
+        viewModelScope.launch { bundledVersion.value = versionOf { adb.bundledAdb() } }
         appSettings.settings.value.adbPathOverride?.let(::loadCustomVersion)
     }
 
@@ -83,6 +114,9 @@ class SettingsViewModel(
 
     /** Reopens the first-run guide; it marks itself seen again when closed. */
     fun showOnboarding() = appSettings.update { it.copy(onboardingSeen = false) }
+
+    /** The first-run guide was closed. */
+    fun finishOnboarding() = appSettings.update { it.copy(onboardingSeen = true) }
 
     /** `null` clears the default preset. */
     fun setDefaultPreset(id: String?) = presets.setDefault(id)
@@ -95,7 +129,7 @@ class SettingsViewModel(
         if (appSettings.settings.value.adbPathOverride == null) return
         appSettings.update { it.copy(adbPathOverride = null) }
         customVersion.value = null
-        restartTracker()
+        adb.restartTracker()
     }
 
     /** Uses [path] as the adb executable if it is a runnable file; otherwise shows an error and keeps the current setting. */
@@ -107,17 +141,17 @@ class SettingsViewModel(
         val changed = appSettings.settings.value.adbPathOverride != trimmed
         appSettings.update { it.copy(adbPathOverride = trimmed) }
         loadCustomVersion(trimmed)
-        if (changed) restartTracker()
+        if (changed) adb.restartTracker()
     }
 
     private fun loadCustomVersion(path: String) {
         customVersion.value = null
-        scope.launch {
+        viewModelScope.launch {
             val version = versionOf { Paths.get(path) }
             if (appSettings.settings.value.adbPathOverride == path) customVersion.value = version
         }
     }
 
     private suspend fun versionOf(path: () -> Path): String =
-        runCatching { adbVersion(path()) }.getOrNull() ?: UNKNOWN_VERSION
+        runCatching { adb.version(path()) }.getOrNull() ?: UNKNOWN_VERSION
 }
