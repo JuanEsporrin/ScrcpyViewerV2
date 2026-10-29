@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
@@ -51,11 +52,15 @@ internal fun ThemeControl(b: SettingsBindings) {
 private val SettingsBindings.systemTitleBar
     get() = windowChrome(state.settings.useSystemTitleBar, isLinux, customTitleBarSupported) == WindowChrome.System
 
+/** The whole row toggles, so the label is clickable and screen readers read it as the switch's name. */
+internal fun titleBarToggle(b: SettingsBindings) = Modifier.toggleable(
+    value = b.systemTitleBar, enabled = b.customTitleBarSupported, role = Role.Switch,
+    onValueChange = b.actions.onUseSystemTitleBar,
+)
+
 @Composable
 internal fun TitleBarSwitch(b: SettingsBindings) {
-    Switch(
-        checked = b.systemTitleBar, onCheckedChange = b.actions.onUseSystemTitleBar, enabled = b.customTitleBarSupported,
-    )
+    Switch(checked = b.systemTitleBar, onCheckedChange = null, enabled = b.customTitleBarSupported)
 }
 
 @Composable

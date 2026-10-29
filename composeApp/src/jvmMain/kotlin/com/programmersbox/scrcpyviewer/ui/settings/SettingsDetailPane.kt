@@ -70,7 +70,7 @@ private fun SettingRow(entry: SettingEntry, query: String, bindings: SettingsBin
         }
         entry.notes(bindings)
     }
-    val padding = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
+    val padding = Modifier.fillMaxWidth().then(entry.rowModifier(bindings)).padding(horizontal = 16.dp, vertical = 12.dp)
     when (entry.layout) {
         EntryLayout.Inline -> Row(padding, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) { text() }

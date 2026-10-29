@@ -3,6 +3,7 @@ package com.programmersbox.scrcpyviewer.ui.settings
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import com.programmersbox.scrcpyviewer.ui.update.UpdateUiState
 import com.programmersbox.scrcpyviewer.ui.update.UpdatesContent
@@ -38,7 +39,10 @@ class SettingsActions(
     val onQuery: (String) -> Unit = {},
 )
 
-/** One setting. [keywords] are searched but never shown; [notes] are conditional hints shown under the description. */
+/**
+ * One setting. [keywords] are searched but never shown; [notes] are conditional hints shown under the description;
+ * [rowModifier] makes the whole row act as the control (e.g. a switch row toggled by clicking its label).
+ */
 class SettingEntry(
     val id: String,
     val title: String,
@@ -46,6 +50,7 @@ class SettingEntry(
     val keywords: List<String> = emptyList(),
     val layout: EntryLayout = EntryLayout.Inline,
     val notes: @Composable (SettingsBindings) -> Unit = {},
+    val rowModifier: @Composable (SettingsBindings) -> Modifier = { Modifier },
     val content: @Composable (SettingsBindings) -> Unit = {},
 )
 
@@ -66,6 +71,7 @@ val settingsCategories: List<SettingsCategory> = listOf(
                 "Applies to windows opened after the change. Restart to apply it to this window.",
                 keywords = listOf("window", "frame", "decorations", "chrome"),
                 notes = { TitleBarNotes(it) },
+                rowModifier = { titleBarToggle(it) },
                 content = { TitleBarSwitch(it) },
             ),
         ),
