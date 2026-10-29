@@ -1,5 +1,7 @@
 package com.programmersbox.scrcpyviewer.ui.presets
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.programmersbox.scrcpyviewer.options.OptionValues
 import com.programmersbox.scrcpyviewer.presets.ConflictChoice
 import com.programmersbox.scrcpyviewer.presets.ImportItem
@@ -8,6 +10,8 @@ import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetCodec
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
+import com.programmersbox.scrcpyviewer.ui.common.defaultViewModelScope
+import com.programmersbox.scrcpyviewer.ui.devices.SelectedDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import org.koin.core.annotation.KoinViewModel
 import java.util.UUID
 
 data class PresetsUiState(
@@ -45,18 +50,18 @@ data class ImportUiState(
         get() = items.count { it.include && !(it.conflictsWith != null && it.choice == ConflictChoice.Skip) }
 }
 
+@KoinViewModel
 class PresetsViewModel(
     private val store: PresetStore,
     private val options: DeviceOptionsStore,
-    private val selectedSerial: StateFlow<String?>,
-    /** Human name for a device serial, used in the "Applied" message. */
-    private val deviceLabel: (String) -> String,
-    scope: CoroutineScope,
-) {
+    /** The device selected on the Devices screen, which Apply targets. */
+    private val device: SelectedDevice,
+    scope: CoroutineScope = defaultViewModelScope(),
+) : ViewModel(scope) {
     private val selectedId = MutableStateFlow<String?>(null)
 
     val state: StateFlow<PresetsUiState> = combine(
-        store.presets, store.defaultPresetId, selectedId, store.persistenceError, selectedSerial,
+        store.presets, store.defaultPresetId, selectedId, store.persistenceError, device.optionsKey,
     ) { presets, defaultId, id, error, serial ->
         val selected = presets.firstOrNull { it.id == id } ?: presets.firstOrNull()
         PresetsUiState(
@@ -67,9 +72,9 @@ class PresetsViewModel(
             persistenceError = error,
             canApply = serial != null,
         )
-    }.stateIn(scope, SharingStarted.Eagerly, PresetsUiState())
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, PresetsUiState())
 
-    val selected: StateFlow<Preset?> = state.map { it.selected }.stateIn(scope, SharingStarted.Eagerly, null)
+    val selected: StateFlow<Preset?> = state.map { it.selected }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _importState = MutableStateFlow<ImportUiState?>(null)
     val importState: StateFlow<ImportUiState?> get() = _importState
@@ -116,10 +121,10 @@ class PresetsViewModel(
 
     /** Applies the preset to the selected device's working set. Returns false (and does nothing) with no selected device. */
     fun applyToSelectedDevice(id: String): Boolean {
-        val serial = selectedSerial.value ?: return false
+        val serial = device.optionsKey.value ?: return false
         val preset = store.presets.value.firstOrNull { it.id == id } ?: return false
         options.applyPreset(serial, id)
-        _messages.tryEmit("Applied ${preset.name} to ${deviceLabel(serial)}")
+        _messages.tryEmit("Applied ${preset.name} to ${device.label(serial)}")
         return true
     }
 

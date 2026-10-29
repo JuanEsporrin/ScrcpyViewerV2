@@ -20,6 +20,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.programmersbox.scrcpyviewer.ui.common.defaultViewModelScope
+import com.programmersbox.scrcpyviewer.ui.mirror.MirrorRequests
+import org.koin.core.annotation.KoinViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -76,66 +81,67 @@ data class WifiNotice(
 /** Why a restart can help, shown when the app may not restart adb by itself (mirror windows are open). */
 const val RESTART_ADB_HINT = "adb was started by another app, so macOS blocks it. Restarting adb closes open mirror windows."
 
-private data class Selection(
-    val devices: List<Device>,
-    val connected: Boolean,
-    val serial: String?,
-    /** Where the selected device's options are stored (see [optionsKey]). */
-    val key: String?,
-    val switching: Set<String>,
-)
-private data class Filters(val query: String, val group: OptionGroup?)
+private data class Filters(val query: String, val group: OptionGroup?, val switching: Set<String>)
 
+@KoinViewModel
 class DevicesViewModel(
-    devices: StateFlow<List<Device>>,
-    connected: StateFlow<Boolean>,
+    private val selection: DeviceSelection,
     private val options: DeviceOptionsStore,
     private val presets: PresetStore,
-    private val scope: CoroutineScope,
-    private val mirrorRequests: MutableSharedFlow<String>,
+    private val mirrorRequests: MirrorRequests,
     private val wireless: WirelessAdb,
-) {
+    scope: CoroutineScope = defaultViewModelScope(),
+) : ViewModel(scope) {
     private val switching = MutableStateFlow<Set<String>>(emptySet())
     private val _notices = MutableSharedFlow<WifiNotice>(extraBufferCapacity = 8)
 
     /** Results of Wi-Fi actions, for the snackbar. */
     val notices: SharedFlow<WifiNotice> = _notices.asSharedFlow()
 
-    private val userSelection = MutableStateFlow<String?>(null)
     private val query = MutableStateFlow("")
     private val group = MutableStateFlow<OptionGroup?>(null)
 
-    private val selection: StateFlow<Selection> = combine(devices, connected, userSelection, switching) { list, conn, chosen, busy ->
-        val device = chosen?.let { s -> list.firstOrNull { it.serial == s } }
-            ?: list.firstOrNull { it.state == DeviceState.Device }
-        Selection(list, conn, device?.serial, device?.optionsKey(), busy)
-    }.stateIn(scope, SharingStarted.Eagerly, Selection(devices.value, connected.value, null, null, emptySet()))
-
     /** The serial shown as selected: the user's choice while it is connected, else the first ready device. */
-    val selectedSerial: StateFlow<String?> = selection.map { it.serial }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+    val selectedSerial: StateFlow<String?> get() = selection.selectedSerial
 
     /** The key the selected device's options are stored under: shared by a phone's USB and Wi-Fi connections. */
-    val selectedOptionsKey: StateFlow<String?> = selection.map { it.key }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+    val selectedOptionsKey: StateFlow<String?> get() = selection.optionsKey
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val workingValues: Flow<OptionValues?> = selectedOptionsKey.flatMapLatest { key ->
+    private val workingValues: Flow<OptionValues?> = selection.optionsKey.flatMapLatest { key ->
         if (key == null) flowOf(null) else options.workingSet(key).map { it.values }
     }
 
     val state: StateFlow<DevicesUiState> = combine(
-        selection,
-        combine(query, group) { q, g -> Filters(q, g) },
+        selection.state,
+        combine(query, group, switching) { q, g, busy -> Filters(q, g, busy) },
         workingValues,
         presets.presets,
         options.persistenceError,
-    ) { sel, filters, values, allPresets, persistenceError ->
+        ::uiState,
+    ).stateIn(
+        viewModelScope, SharingStarted.Eagerly,
+        // Built now, so the first frame after the screen creates this ViewModel already shows the options.
+        selection.state.value.let { sel ->
+            uiState(
+                sel, Filters(query.value, group.value, switching.value),
+                sel.key?.let { options.workingSet(it).value.values }, presets.presets.value, options.persistenceError.value,
+            )
+        },
+    )
+
+    private fun uiState(
+        sel: DeviceSelectionState,
+        filters: Filters,
+        values: OptionValues?,
+        allPresets: List<Preset>,
+        persistenceError: String?,
+    ): DevicesUiState {
         val serial = sel.serial
         val key = sel.key
         val current = values ?: OptionValues(emptyMap())
         val errors = current.validate()
-        DevicesUiState(
+        return DevicesUiState(
             devices = sel.devices,
             selectedSerial = serial,
             query = filters.query,
@@ -152,12 +158,12 @@ class DevicesViewModel(
             presets = allPresets,
             basePresetId = key?.let { options.effectiveBasePresetId(it) },
             persistenceError = persistenceError,
-            switching = sel.switching,
+            switching = filters.switching,
         )
-    }.stateIn(scope, SharingStarted.Eagerly, DevicesUiState(devices = devices.value, adbConnected = connected.value))
+    }
 
     fun select(serial: String) {
-        userSelection.value = serial
+        selection.select(serial)
     }
 
     fun setQuery(q: String) {
@@ -200,16 +206,15 @@ class DevicesViewModel(
 
     /** Requests a mirror window for the selected device. Does nothing unless [DevicesUiState.canMirror]. */
     fun mirror() {
-        if (state.value.canMirror) state.value.selectedSerial?.let { mirrorRequests.tryEmit(it) }
+        if (state.value.canMirror) state.value.selectedSerial?.let(mirrorRequests::request)
     }
 
     /** Double-click on a device row: select it and mirror it when it is ready and its options are valid. */
     fun openDevice(serial: String) {
         select(serial)
-        val sel = selection.value
-        val device = sel.devices.firstOrNull { it.serial == serial } ?: return
+        val device = selection.state.value.devices.firstOrNull { it.serial == serial } ?: return
         val errors = options.workingSet(device.optionsKey()).value.values.validate()
-        if (device.state == DeviceState.Device && errors.isEmpty()) mirrorRequests.tryEmit(serial)
+        if (device.state == DeviceState.Device && errors.isEmpty()) mirrorRequests.request(serial)
     }
 
     /** Whether [serial] can be mirrored now: it is ready and its options are valid (the right-click Mirror item). */
@@ -225,7 +230,7 @@ class DevicesViewModel(
         switching.update { if (serial in it) it else { started = true; it + serial } }
         if (!started) return
         val name = deviceTitle(device)
-        scope.launch {
+        viewModelScope.launch {
             try {
                 val notice = when (val result = wireless.switchToWifi(serial)) {
                     is SwitchResult.Connected -> WifiNotice("$name connected at ${result.address}", result.address)
@@ -247,7 +252,7 @@ class DevicesViewModel(
     /** Right-click "Disconnect" on a Wi-Fi device. */
     fun disconnect(serial: String) {
         val name = state.value.devices.firstOrNull { it.serial == serial }?.let(::deviceTitle) ?: serial
-        scope.launch {
+        viewModelScope.launch {
             val result = wireless.disconnect(serial)
             if (result is AdbOutcome.Failed) _notices.emit(WifiNotice("Couldn't disconnect $name: ${result.message}"))
         }
@@ -266,7 +271,7 @@ class DevicesViewModel(
 
     /** The "Restart adb" action: restarts the adb server so this app owns it, then says to try again. */
     fun restartAdb() {
-        scope.launch {
+        viewModelScope.launch {
             val text = try {
                 wireless.restartServer()
                 "Restarted adb. Try connecting again."

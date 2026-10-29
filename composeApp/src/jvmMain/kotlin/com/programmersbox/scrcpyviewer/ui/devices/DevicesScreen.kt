@@ -58,9 +58,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,7 +81,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.adb.Device
 import com.programmersbox.scrcpyviewer.adb.DeviceState
-import com.programmersbox.scrcpyviewer.adb.WirelessAdb
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.options.OptionCatalog
 import com.programmersbox.scrcpyviewer.options.OptionGroup
@@ -92,14 +89,15 @@ import com.programmersbox.scrcpyviewer.ui.common.CopyButton
 import com.programmersbox.scrcpyviewer.ui.common.DetailBackButton
 import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.common.ResizableListDetail
+import com.programmersbox.scrcpyviewer.ui.common.rememberComposedViewModelStoreOwner
 import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
+import org.koin.compose.viewmodel.koinViewModel
 import com.programmersbox.scrcpyviewer.ui.common.OptionRow
 import com.programmersbox.scrcpyviewer.ui.theme.warnColor
 
 @Composable
 fun DevicesScreen(
     viewModel: DevicesViewModel,
-    wireless: WirelessAdb,
     modifier: Modifier = Modifier,
     panes: ListDetailPanes = rememberListDetailPanes(),
 ) {
@@ -124,9 +122,14 @@ fun DevicesScreen(
         }
     }
     if (pairing) {
-        val scope = rememberCoroutineScope()
-        val pairingVm = remember { WifiPairingViewModel(wireless, scope, onDone = { viewModel.notify(it); pairing = false }) }
-        DisposableEffect(pairingVm) { onDispose { pairingVm.close() } }
+        // Owned by the dialog: closing it clears the ViewModel, which stops polling.
+        val pairingVm = koinViewModel<WifiPairingViewModel>(viewModelStoreOwner = rememberComposedViewModelStoreOwner())
+        LaunchedEffect(pairingVm) {
+            pairingVm.results.collect {
+                viewModel.notify(it)
+                pairing = false
+            }
+        }
         val pairingState by pairingVm.state.collectAsState()
         WifiPairingDialog(pairingState, remember(pairingVm) { pairingVm.actions() }, onDismiss = { pairing = false })
     }

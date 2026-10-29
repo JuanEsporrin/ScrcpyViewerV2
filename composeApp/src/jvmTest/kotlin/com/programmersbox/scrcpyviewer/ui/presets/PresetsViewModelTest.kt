@@ -6,6 +6,7 @@ import com.programmersbox.scrcpyviewer.presets.Preset
 import com.programmersbox.scrcpyviewer.presets.PresetCodec
 import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
+import com.programmersbox.scrcpyviewer.ui.devices.SelectedDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -30,7 +31,12 @@ class PresetsViewModelTest {
     private val qa = Preset("qa", "QA default", "Sharp", OptionValues(mapOf("max-size" to "1920", "no-audio" to null)))
     private val low = Preset("low", "Low bandwidth", options = OptionValues(mapOf("video-bit-rate" to "2M")))
 
-    private fun vm() = PresetsViewModel(store, options, serial, { "Pixel 8" }, scope).also {
+    private val device = object : SelectedDevice {
+        override val optionsKey = serial
+        override fun label(key: String) = "Pixel 8"
+    }
+
+    private fun vm() = PresetsViewModel(store, options, device, scope).also {
         store.upsert(qa)
         store.upsert(low)
     }

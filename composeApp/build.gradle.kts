@@ -8,6 +8,7 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeMultiplatform)
+    alias(libs.plugins.koinCompiler)
 }
 
 // Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
@@ -60,6 +61,11 @@ kotlin {
             implementation(libs.material3.adaptive.layout)
             implementation(libs.qrose)
             implementation(libs.jewel.decorated.window)
+            implementation(project.dependencies.platform(libs.koin.bom))
+            implementation(libs.koin.core)
+            implementation(libs.koin.annotations)
+            implementation(libs.koin.compose)
+            implementation(libs.koin.compose.viewmodel)
             val ffmpeg = libs.versions.ffmpeg.get()
             val javacpp = libs.versions.javacpp.get()
             implementation("org.bytedeco:ffmpeg:$ffmpeg")

@@ -5,7 +5,13 @@ import com.programmersbox.scrcpyviewer.adb.FakeWirelessAdb
 import com.programmersbox.scrcpyviewer.adb.MdnsService
 import com.programmersbox.scrcpyviewer.adb.MdnsType
 import com.programmersbox.scrcpyviewer.adb.WirelessParsers
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,9 +40,10 @@ class WifiPairingViewModelTest {
         }
     }
 
-    private fun vm() = WifiPairingViewModel(
-        wireless, scope, onDone = { done.complete(it) }, random = Random(1), pollMs = 10, connectWaitMs = 100,
-    )
+    private fun vm(scope: CoroutineScope = this.scope) =
+        WifiPairingViewModel(wireless, random = Random(1), pollMs = 10, connectWaitMs = 100, scope = scope).also { vm ->
+            this.scope.launch { done.complete(vm.results.first()) }
+        }
 
     @AfterTest
     fun tearDown() = scope.cancel()
@@ -165,10 +172,12 @@ class WifiPairingViewModelTest {
     }
 
     @Test
-    fun `close cancels polling`() = runBlocking {
-        val vm = vm()
+    fun `clearing cancels polling`() = runBlocking {
+        val store = ViewModelStore()
+        ViewModelProvider.create(store, viewModelFactory { initializer { vm(CoroutineScope(SupervisorJob() + Dispatchers.Default)) } })
+            .get(WifiPairingViewModel::class)
         withTimeout(3000) { while (polls.get() < 2) delay(5) }
-        vm.close()
+        store.clear()
         delay(30)
         val after = polls.get()
         delay(60)

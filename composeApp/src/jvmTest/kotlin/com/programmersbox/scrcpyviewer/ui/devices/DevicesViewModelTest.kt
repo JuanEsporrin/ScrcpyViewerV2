@@ -6,6 +6,8 @@ import com.programmersbox.scrcpyviewer.adb.DeviceState
 import com.programmersbox.scrcpyviewer.adb.AdbOutcome
 import com.programmersbox.scrcpyviewer.adb.FakeWirelessAdb
 import com.programmersbox.scrcpyviewer.adb.SwitchResult
+import com.programmersbox.scrcpyviewer.adb.WirelessAdb
+import com.programmersbox.scrcpyviewer.ui.mirror.MirrorRequests
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -48,7 +50,8 @@ class DevicesViewModelTest {
 
     private val wireless = FakeWirelessAdb()
 
-    private fun vm() = DevicesViewModel(devices, connected, options, presets, scope, mirrorRequests, wireless)
+    private fun vm(options: DeviceOptionsStore = this.options, wireless: WirelessAdb = this.wireless) =
+        DevicesViewModel(DeviceSelection(devices, connected, scope), options, presets, MirrorRequests(mirrorRequests), wireless, scope)
 
     private val pixel = device("R1", info = DeviceInfo("Pixel 8 Pro", "15", 35, "R1"))
     private val usbAbc = device("ABC")
@@ -128,7 +131,7 @@ class DevicesViewModelTest {
                 return SwitchResult.NotOnWifi
             }
         }
-        val vm = DevicesViewModel(devices, connected, options, presets, scope, mirrorRequests, slow)
+        val vm = vm(wireless = slow)
         vm.connectOverWifi("R1")
         vm.connectOverWifi("R1")
         assertEquals(1, slow.calls.count { it.startsWith("switch") })
@@ -398,7 +401,7 @@ class DevicesViewModelTest {
         // A file where the data directory should be: every save fails.
         val blocker = Files.writeString(dir.resolve("blocker"), "x")
         val broken = DeviceOptionsStore(blocker.resolve("devices.json"), presets, scope)
-        val vm = DevicesViewModel(devices, connected, broken, presets, scope, mirrorRequests, wireless)
+        val vm = vm(options = broken)
         vm.toggle("no-audio", true)
         assertTrue(vm.state.value.persistenceError?.contains("devices.json") == true, "${vm.state.value.persistenceError}")
     }

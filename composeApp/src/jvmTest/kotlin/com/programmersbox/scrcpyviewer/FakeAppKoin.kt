@@ -1,7 +1,17 @@
 package com.programmersbox.scrcpyviewer
 
 import com.programmersbox.scrcpyviewer.adb.AdbClient
+import com.programmersbox.scrcpyviewer.adb.DeviceTracker
 import com.programmersbox.scrcpyviewer.adb.ProcessResult
+import com.programmersbox.scrcpyviewer.di.AppScope
+import com.programmersbox.scrcpyviewer.di.startAppKoin
+import com.programmersbox.scrcpyviewer.state.AppSettings
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.koin.core.Koin
+import org.koin.core.context.stopKoin
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -33,9 +43,17 @@ class FakeAdbClient(private val payload: String = FAKE_DEVICES_PAYLOAD) : AdbCli
 }
 
 /**
- * An [AppGraph] on a fresh temp data dir with [FakeAdbClient]; cancel its scope when done.
- * The first-run guide is marked seen so it does not cover the app.
+ * Starts the app's Koin graph on a fresh temp data dir with [FakeAdbClient], runs [block] once the fake devices are
+ * listed, then stops it. The first-run guide is marked seen so it does not cover the app.
  */
-fun fakeAppGraph(dataDir: Path = Files.createTempDirectory("scrcpyviewer-test")): AppGraph =
-    AppGraph(dataDir = dataDir, adbClientFactory = { FakeAdbClient() })
-        .also { graph -> graph.settings.update { it.copy(onboardingSeen = true) } }
+fun withFakeAppKoin(dataDir: Path = Files.createTempDirectory("scrcpyviewer-test"), block: (Koin) -> Unit) {
+    val koin = startAppKoin(dataDir) { FakeAdbClient() }
+    try {
+        koin.get<AppSettings>().update { it.copy(onboardingSeen = true) }
+        runBlocking { withTimeout(5_000) { koin.get<DeviceTracker>().devices.first { it.size == 3 } } }
+        block(koin)
+    } finally {
+        koin.get<AppScope>().cancel()
+        stopKoin()
+    }
+}

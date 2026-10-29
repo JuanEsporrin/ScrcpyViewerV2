@@ -1,23 +1,27 @@
 package com.programmersbox.scrcpyviewer.ui.devices
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.programmersbox.scrcpyviewer.adb.AdbOutcome
 import com.programmersbox.scrcpyviewer.adb.MdnsService
 import com.programmersbox.scrcpyviewer.adb.MdnsType
 import com.programmersbox.scrcpyviewer.adb.WirelessAdb
 import com.programmersbox.scrcpyviewer.adb.WirelessParsers
+import com.programmersbox.scrcpyviewer.ui.common.defaultViewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.koin.core.annotation.KoinViewModel
 import kotlin.random.Random
 
 enum class PairingTab { Qr, Code, Ip }
@@ -55,19 +59,21 @@ data class WifiPairingState(
 
 /**
  * The "Pair device over Wi-Fi" dialog: polls `adb mdns services` while open, pairs automatically when the phone
- * scans the QR code, and pairs or connects on submit for the other tabs. [onDone] gets the snackbar text after a
- * successful pair or connect. Call [close] when the dialog goes away.
+ * scans the QR code, and pairs or connects on submit for the other tabs. [results] gets the snackbar text after a
+ * successful pair or connect. Scope it to the dialog: clearing it stops polling and any pair or connect.
  */
+@KoinViewModel
 class WifiPairingViewModel(
     private val wireless: WirelessAdb,
-    scope: CoroutineScope,
-    private val onDone: (WifiNotice) -> Unit,
     random: Random = Random.Default,
     private val pollMs: Long = 1000,
     private val connectWaitMs: Long = 10_000,
-) {
-    private val job = SupervisorJob(scope.coroutineContext[Job])
-    private val vmScope = CoroutineScope(scope.coroutineContext + job)
+    scope: CoroutineScope = defaultViewModelScope(),
+) : ViewModel(scope) {
+    private val _results = Channel<WifiNotice>(Channel.BUFFERED)
+
+    /** A successful pair or connect, for the snackbar. */
+    val results: Flow<WifiNotice> = _results.receiveAsFlow()
 
     private val _state = MutableStateFlow(
         run {
@@ -82,7 +88,7 @@ class WifiPairingViewModel(
     private val triedQr = HashSet<String>()
 
     init {
-        vmScope.launch {
+        viewModelScope.launch {
             while (isActive) {
                 val services = wireless.mdnsServices()
                 val pairing = services.filter { it.type == MdnsType.Pairing }
@@ -122,7 +128,7 @@ class WifiPairingViewModel(
                     ?: s.chosen?.let { MdnsService(it, MdnsType.Pairing, it) }
                     ?: return
                 if (s.code.length != 6) return
-                vmScope.launch { pairAndConnect(service, s.code) }
+                viewModelScope.launch { pairAndConnect(service, s.code) }
             }
             PairingTab.Ip -> submitIp(s)
         }
@@ -130,7 +136,7 @@ class WifiPairingViewModel(
 
     /** The dialog's "Restart adb" button: restarts the adb server so this app owns it; the user then tries again. */
     fun restartAdb() {
-        vmScope.launch {
+        viewModelScope.launch {
             _state.update { it.copy(busy = true, canRestartAdb = false) }
             val error = try {
                 wireless.restartServer()
@@ -144,9 +150,6 @@ class WifiPairingViewModel(
         }
     }
 
-    /** Cancels polling and any pair or connect in progress. */
-    fun close() = vmScope.cancel()
-
     private fun submitIp(s: WifiPairingState) {
         val ipError = if (isIpv4(s.ip)) null else "Enter an IP address"
         val portError = if (isPort(s.port)) null else "Enter a port from 1 to 65535"
@@ -158,7 +161,7 @@ class WifiPairingViewModel(
             return
         }
         val address = "${s.ip}:${s.port}"
-        vmScope.launch {
+        viewModelScope.launch {
             busy(true)
             if (s.pairPort.isNotEmpty() && s.pairCode.isNotEmpty()) {
                 val paired = wireless.pair("${s.ip}:${s.pairPort}", s.pairCode)
@@ -204,7 +207,7 @@ class WifiPairingViewModel(
 
     private fun succeed(notice: WifiNotice) {
         _state.update { it.copy(busy = false) }
-        onDone(notice)
+        _results.trySend(notice)
     }
 
     private fun pairError(outcome: AdbOutcome): String = when (outcome) {

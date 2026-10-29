@@ -32,128 +32,22 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.programmersbox.scrcpyviewer.adb.AdbClient
-import com.programmersbox.scrcpyviewer.adb.DeviceTracker
-import com.programmersbox.scrcpyviewer.adb.DnsSdDiscovery
-import com.programmersbox.scrcpyviewer.adb.WirelessAdb
-import com.programmersbox.scrcpyviewer.adb.optionsKey
-import com.programmersbox.scrcpyviewer.media.AudioPlayer
-import com.programmersbox.scrcpyviewer.media.DelayedVideoSink
-import com.programmersbox.scrcpyviewer.media.VideoDecoder
-import com.programmersbox.scrcpyviewer.scrcpy.ScrcpySession
-import com.programmersbox.scrcpyviewer.scrcpy.ServerLauncher
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorController
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorWindow
-import kotlinx.coroutines.launch
-import java.awt.Toolkit
-import java.awt.datatransfer.StringSelection
-import com.programmersbox.scrcpyviewer.presets.PresetStore
 import com.programmersbox.scrcpyviewer.state.AppSettings
-import com.programmersbox.scrcpyviewer.state.DeviceOptionsStore
-import com.programmersbox.scrcpyviewer.tools.BundledTools
 import com.programmersbox.scrcpyviewer.ui.App
-import com.programmersbox.scrcpyviewer.ui.devices.DevicesViewModel
-import com.programmersbox.scrcpyviewer.ui.devices.deviceTitle
-import com.programmersbox.scrcpyviewer.ui.presets.PresetsViewModel
-import com.programmersbox.scrcpyviewer.ui.settings.SettingsViewModel
-import com.programmersbox.scrcpyviewer.ui.settings.parseAdbVersion
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import java.nio.file.Path
-import java.nio.file.Paths
-
-/**
- * Dependency holder for the whole app. Tests pass their own [dataDir] and an [adbClientFactory]
- * (given the adb path) so no adb server or device is touched.
- */
-class AppGraph(
-    private val dataDir: Path = AppDataDir.root(),
-    private val adbClientFactory: (adbPath: () -> Path) -> AdbClient = { AdbClient(adbPath = it) },
-) {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    val settings = AppSettings(dataDir.resolve("settings.json"))
-    val presetStore = PresetStore(dataDir.resolve("presets.json"), scope)
-    val deviceOptions = DeviceOptionsStore(dataDir.resolve("devices.json"), presetStore, scope)
-    val bundledTools = BundledTools(dataDir = dataDir)
-    val adbClient = adbClientFactory {
-        settings.settings.value.adbPathOverride?.let { Paths.get(it) } ?: bundledTools.adbExecutable()
-    }
-    val deviceTracker = DeviceTracker(adbClient, scope)
-
-    /** Serials the user asked to mirror (double-click or Mirror button). Consumed by the mirror window host. */
-    val mirrorRequests = MutableSharedFlow<String>(extraBufferCapacity = 16)
-
-    val wirelessAdb = WirelessAdb(
-        adbClient,
-        extraDiscovery = if (Os.isMac) DnsSdDiscovery()::services else null,
-        // Restarting adb ends every mirror session, so only do it unasked while none is open.
-        canRestartServer = { mirrorController.open.value.isEmpty() },
-    )
-
-    val devicesViewModel = DevicesViewModel(
-        deviceTracker.devices, deviceTracker.connected, deviceOptions, presetStore, scope, mirrorRequests, wirelessAdb,
-    )
-
-    val presetsViewModel = PresetsViewModel(
-        presetStore, deviceOptions, devicesViewModel.selectedOptionsKey,
-        deviceLabel = { key -> devicesViewModel.state.value.devices.firstOrNull { it.optionsKey() == key }?.let(::deviceTitle) ?: key },
-        scope = scope,
-    )
-
-    val settingsViewModel = SettingsViewModel(
-        settings, presetStore,
-        bundledAdb = bundledTools::adbExecutable,
-        adbVersion = { path ->
-            val result = adbClientFactory { path }.exec("version")
-            if (result.exitCode == 0) parseAdbVersion(result.stdout) else null
-        },
-        restartTracker = deviceTracker::restart,
-        scope = scope,
-    )
-
-    /** The device currently selected on the Devices screen. */
-    val selectedSerial: StateFlow<String?> get() = devicesViewModel.selectedSerial
-
-    val serverLauncher = ServerLauncher(adbClient, bundledTools)
-
-    /** Open mirror sessions; they run on [scope], so they live until their window or the app is closed. */
-    val mirrorController = MirrorController(
-        scope = scope,
-        devices = deviceTracker.devices,
-        optionsFor = { serial ->
-            val key = deviceTracker.devices.value.firstOrNull { it.serial == serial }?.optionsKey() ?: serial
-            deviceOptions.workingSet(key).value.values
-        },
-        newSession = { serial, values ->
-            ScrcpySession(
-                serial, values, serverLauncher,
-                decoderFactory = { meta, session ->
-                    // video-buffer delays what is shown, not what is recorded (the recorder is another sink).
-                    DelayedVideoSink.forOptions(VideoDecoder(meta.codecId, session::publishFrame, session::publishFps), values)
-                },
-                audioFactory = { codecId, _ -> AudioPlayer.forOptions(codecId, values) },
-                scope = scope,
-                captureDir = { Paths.get(settings.settings.value.captureDir) },
-            )
-        },
-        setClipboard = { text -> Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) },
-    )
-
-    init {
-        scope.launch { mirrorRequests.collect { mirrorController.open(it) } }
-    }
-}
+import com.programmersbox.scrcpyviewer.di.startAppKoin
 
 fun main() {
     AppIcon.installTaskbarIcon()
-    val graph = AppGraph()
+    val koin = startAppKoin()
+    val appSettings = koin.get<AppSettings>()
+    val mirrorController = koin.get<MirrorController>()
+    val adbClient = koin.get<AdbClient>()
     application {
-        val settings by graph.settings.settings.collectAsState()
-        val mirrors by graph.mirrorController.open.collectAsState()
-        val shutdown = remember { AppShutdown(graph.mirrorController, exit = ::exitApplication) }
+        val settings by appSettings.settings.collectAsState()
+        val mirrors by mirrorController.open.collectAsState()
+        val shutdown = remember { AppShutdown(mirrorController, exit = ::exitApplication) }
         val shutdownState by shutdown.state.collectAsState()
         DisposableEffect(Unit) {
             shutdown.installQuitHandler { SwingUtilities.invokeLater(shutdown::request) }
@@ -171,11 +65,11 @@ fun main() {
             visible = shuttingDown == null,
             titleBar = { if (chrome == WindowChrome.Custom) MainTitle() },
         ) {
-            App(graph)
+            App()
         }
         for ((serial, session) in mirrors) {
             key(serial) {
-                MirrorWindow(serial, session, graph.mirrorController, settings.themeMode, settings.useSystemTitleBar, settings.captureDir, adb = graph.adbClient)
+                MirrorWindow(serial, session, mirrorController, settings.themeMode, settings.useSystemTitleBar, settings.captureDir, adb = adbClient)
             }
         }
         if (shuttingDown?.finishingRecording == true) FinishingRecordingWindow(settings.themeMode)
