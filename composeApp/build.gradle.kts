@@ -1,6 +1,7 @@
 import dev.nucleusframework.desktop.application.dsl.ReleaseChannel
 import dev.nucleusframework.desktop.application.dsl.ReleaseType
 import dev.nucleusframework.desktop.application.dsl.TargetFormat
+import dev.nucleusframework.desktop.application.tasks.AbstractElectronBuilderPackageTask
 import java.net.URI
 import java.security.MessageDigest
 import java.util.zip.ZipFile
@@ -252,6 +253,14 @@ val downloadBundledTools = tasks.register("downloadBundledTools") {
 }
 
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(downloadBundledTools) }
+
+// Nucleus 2.5.18 writes the package.json electron-builder reads its version from only when the file is missing, so
+// after an appVersion change an incremental build names the files and latest-*.yml after the old version. Fixed
+// upstream after 2.5.18 (Nucleus 85204103); remove this when upgrading. Clean CI builds never hit it.
+tasks.withType<AbstractElectronBuilderPackageTask>().configureEach {
+    val packageJson = destinationDir.file("package.json")
+    doFirst { packageJson.get().asFile.delete() }
+}
 
 // Every JavaExec task (run, hot-reload, IDE-generated run tasks) gets the tools and the dev lookup dir.
 tasks.withType<JavaExec>().configureEach {
