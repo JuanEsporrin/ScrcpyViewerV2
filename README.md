@@ -63,9 +63,11 @@ Installers for each release are on the [Releases](https://github.com/jakepurple1
 
 | Platform | File   |
 |----------|--------|
-| macOS    | `.dmg` |
-| Windows  | `.msi` |
+| macOS    | `.dmg` (the `.zip` is for the in-app updater) |
+| Windows  | `.exe` (NSIS installer, per user) |
 | Linux    | `.deb` |
+
+The app checks for updates when it opens and can install them itself (Settings > Updates).
 
 > **macOS:** the builds are not signed. The first time you open the app, right-click it and choose **Open**. When
 > macOS asks for Local Network access, allow it. Wi-Fi debugging does not work without it.
@@ -91,7 +93,8 @@ Installers for each release are on the [Releases](https://github.com/jakepurple1
 | Serialization  | kotlinx.serialization (JSON settings and presets)                                               |
 | QR codes       | [QRose](https://github.com/alexzhirkevich/qrose) (Wi-Fi pairing)                                |
 | Runtime        | JetBrains Runtime 25 (compiled with JDK 21 toolchain)                                           |
-| Build          | Gradle (Kotlin DSL) with version catalog, Compose Desktop native packaging                     |
+| Build          | Gradle (Kotlin DSL) with version catalog, [Nucleus](https://nucleusframework.dev) packaging (electron-builder) |
+| Updates        | Nucleus updater (`latest-*.yml` metadata on GitHub releases)                                     |
 | CI             | GitHub Actions: tests on macOS, Windows and Linux; installers built and released on `v*` tags |
 
 ## How it works
@@ -112,6 +115,7 @@ Closing a mirror window closes its sockets. This stops the server on the device 
 ## Building from source
 
 Requirements: JDK 21 or newer. Gradle downloads JetBrains Runtime 25 automatically when you run or package the app.
+Packaging also needs Node.js (24 in CI): the Nucleus plugin builds the installers with electron-builder.
 
 ```bash
 # Run the app (downloads scrcpy-server and adb into composeApp/bundled on first run)
@@ -127,9 +131,8 @@ Requirements: JDK 21 or newer. Gradle downloads JetBrains Runtime 25 automatical
 ./gradlew :composeApp:jvmTest -PdeviceTests -PdeviceSerials=<serial1,serial2>
 
 # Build an installer for the current OS
-./gradlew :composeApp:packageDmg   # macOS
-./gradlew :composeApp:packageMsi   # Windows
-./gradlew :composeApp:packageDeb   # Linux
+# (macOS: DMG + ZIP, Windows: NSIS .exe, Linux: .deb, each with latest-*.yml)
+./gradlew :composeApp:packageDistributionForCurrentOS
 ```
 
 The `downloadBundledTools` task fetches scrcpy-server v5.0 (checked against its SHA-256) and the latest Android
