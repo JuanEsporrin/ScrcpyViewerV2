@@ -13,6 +13,11 @@ import com.programmersbox.scrcpyviewer.ui.settings.SettingsContent
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsUiState
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import com.programmersbox.scrcpyviewer.ui.update.UpdateUiState
+import com.programmersbox.scrcpyviewer.ui.update.UpdatesContent
+import com.programmersbox.scrcpyviewer.update.Release
+import com.programmersbox.scrcpyviewer.update.UpdateState
+import java.time.Instant
 import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
@@ -41,6 +46,56 @@ class SettingsScreenshotTest {
         }
         assertTrue(Files.size(out) > 10_000, "$name should not be blank")
     }
+
+    private val release = Release(
+        tagName = "v1.5.0",
+        htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.5.0",
+        publishedAt = "2026-10-27T09:00:00Z",
+    )
+    private val now = Instant.parse("2026-10-29T12:00:00Z")
+
+    private fun renderUpdates(name: String, ui: UpdateUiState) {
+        val out = outDir.resolve(name)
+        renderToPng(1280, 800, out) {
+            ScrcpyViewerTheme(ThemeMode.Light) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    SettingsContent(
+                        state, {}, {}, {}, {}, {}, {}, {},
+                        updates = { UpdatesContent(ui, {}, {}, {}, {}, now) },
+                    )
+                }
+            }
+        }
+        assertTrue(Files.size(out) > 10_000, "$name should not be blank")
+    }
+
+    private fun updatesUi(state: UpdateState, available: Release? = null, canSelfUpdate: Boolean = true) = UpdateUiState(
+        state = state, available = available, currentVersion = "1.4.0",
+        lastChecked = now.minusSeconds(120), canSelfUpdate = canSelfUpdate,
+    )
+
+    @Test
+    fun `updates available`() =
+        renderUpdates("settings-updates-available.png", updatesUi(UpdateState.Available(release), release))
+
+    @Test
+    fun `updates downloading`() =
+        renderUpdates("settings-updates-downloading.png", updatesUi(UpdateState.Downloading(release, 20_000_000, 50_000_000), release))
+
+    @Test
+    fun `updates up to date`() = renderUpdates("settings-updates-uptodate.png", updatesUi(UpdateState.UpToDate))
+
+    @Test
+    fun `updates error`() = renderUpdates(
+        "settings-updates-error.png",
+        updatesUi(UpdateState.Failed("Couldn't check for updates: GitHub returned HTTP 403", null)),
+    )
+
+    @Test
+    fun `updates mac hint`() = renderUpdates(
+        "settings-updates-mac-hint.png",
+        updatesUi(UpdateState.Idle).copy(macNotInApplications = true),
+    )
 
     @Test
     fun `settings light`() = render("settings-light.png", ThemeMode.Light)

@@ -29,7 +29,19 @@ import com.programmersbox.scrcpyviewer.update.UpdateState
 
 private const val BYTES_PER_MB = 1_000_000L
 
-private val Release.versionLabel: String get() = version?.toString() ?: tagName
+internal val Release.versionLabel: String get() = version?.toString() ?: tagName
+
+internal fun UpdateState.Downloading.progressText() = "Downloading… ${read / BYTES_PER_MB} of ${total / BYTES_PER_MB} MB"
+
+/** Determinate once the total size is known, indeterminate before that. */
+@Composable
+internal fun DownloadProgressBar(downloading: UpdateState.Downloading, modifier: Modifier = Modifier) {
+    if (downloading.total > 0) {
+        LinearProgressIndicator(progress = { downloading.read.toFloat() / downloading.total }, modifier = modifier)
+    } else {
+        LinearProgressIndicator(modifier)
+    }
+}
 
 /**
  * The update popup and the download progress, by [UpdateUiState.state]; other states show nothing.
@@ -130,15 +142,12 @@ private fun ProgressDialog(release: Release, downloading: UpdateState.Downloadin
             if (downloading != null) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Downloading… ${downloading.read / BYTES_PER_MB} of ${downloading.total / BYTES_PER_MB} MB",
+                    downloading.progressText(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    progress = { if (downloading.total > 0) downloading.read.toFloat() / downloading.total else 0f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                DownloadProgressBar(downloading, Modifier.fillMaxWidth())
             } else {
                 Spacer(Modifier.height(16.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())

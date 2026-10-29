@@ -134,7 +134,8 @@ fun App(
 
                                 TopLevelRoute.Settings -> SettingsScreen(
                                     settingsViewModel,
-                                    settingsDialogs
+                                    settingsDialogs,
+                                    updateViewModel = updateViewModel,
                                 )
                             }
                         }

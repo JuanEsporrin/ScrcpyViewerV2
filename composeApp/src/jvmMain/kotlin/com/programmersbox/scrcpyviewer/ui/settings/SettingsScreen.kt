@@ -38,12 +38,19 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.Os
 import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import com.programmersbox.scrcpyviewer.ui.update.UpdateViewModel
+import com.programmersbox.scrcpyviewer.ui.update.UpdatesSection
 import com.programmersbox.scrcpyviewer.ui.window.WindowChrome
 import com.programmersbox.scrcpyviewer.ui.window.windowChrome
 import java.nio.file.Paths
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel, files: SettingsFileDialogs, modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel,
+    files: SettingsFileDialogs,
+    modifier: Modifier = Modifier,
+    updateViewModel: UpdateViewModel? = null,
+) {
     val state by viewModel.state.collectAsState()
     SettingsContent(
         state = state,
@@ -56,6 +63,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, files: SettingsFileDialogs, mod
         onBrowseCaptureDir = { files.chooseFolder(Paths.get(state.settings.captureDir))?.let { viewModel.setCaptureDir(it.toString()) } },
         onShowOnboarding = viewModel::showOnboarding,
         modifier = modifier,
+        updates = { updateViewModel?.let { UpdatesSection(it) } },
     )
 }
 
@@ -71,12 +79,14 @@ fun SettingsContent(
     onBrowseCaptureDir: () -> Unit,
     onShowOnboarding: () -> Unit = {},
     modifier: Modifier = Modifier,
+    updates: @Composable () -> Unit = {},
     isLinux: Boolean = Os.isLinux,
     customTitleBarSupported: Boolean = com.programmersbox.scrcpyviewer.ui.window.customTitleBarSupported,
 ) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp)) {
         Column(Modifier.widthIn(max = 720.dp), verticalArrangement = Arrangement.spacedBy(28.dp)) {
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
+            updates()
             state.persistenceError?.let {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.medium) {
                     Text(
@@ -143,7 +153,7 @@ fun SettingsContent(
 }
 
 @Composable
-private fun Section(title: String, hint: String? = null, content: @Composable () -> Unit) {
+internal fun Section(title: String, hint: String? = null, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.titleMedium)
         hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
