@@ -1,4 +1,6 @@
-import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import dev.nucleusframework.desktop.application.dsl.ReleaseChannel
+import dev.nucleusframework.desktop.application.dsl.ReleaseType
+import dev.nucleusframework.desktop.application.dsl.TargetFormat
 import java.net.URI
 import java.security.MessageDigest
 import java.util.zip.ZipFile
@@ -9,10 +11,12 @@ plugins {
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.koinCompiler)
+    alias(libs.plugins.nucleus)
 }
 
 // Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
-val appVersion = "1.5.0"
+// Local update tests only: -PappVersion=1.6.1 builds a "newer" package.
+val appVersion = (findProperty("appVersion") as String?) ?: "1.6.0"
 
 val generateAppVersion = tasks.register("generateAppVersion") {
     val version = appVersion
@@ -33,8 +37,10 @@ val generateAppVersion = tasks.register("generateAppVersion") {
     }
 }
 
+val hostOs: String = System.getProperty("os.name").lowercase()
+
 val hostClassifier: String = run {
-    val os = System.getProperty("os.name").lowercase()
+    val os = hostOs
     val arch = System.getProperty("os.arch").lowercase()
     val isArm = arch == "aarch64" || arch == "arm64"
     when {
@@ -66,6 +72,7 @@ kotlin {
             implementation(libs.koin.annotations)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
+            implementation(libs.nucleus.updater)
             val ffmpeg = libs.versions.ffmpeg.get()
             val javacpp = libs.versions.javacpp.get()
             implementation("org.bytedeco:ffmpeg:$ffmpeg")
@@ -96,55 +103,86 @@ val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested -
         .any { name.contains(it, ignoreCase = true) }
 }
 
-compose.desktop {
-    application {
-        mainClass = "com.programmersbox.scrcpyviewer.MainKt"
-        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
-        // so the app runs on JBR 25; Gradle auto-provisions it via foojay. Compilation stays on jvmToolchain(21).
-        // javaHome is a plain String, so resolve JBR 25 only when a run or packaging task is requested; tests,
-        // CI test jobs and IDE sync then never download it.
-        if (needsAppRuntime) {
-            javaHome = javaToolchains.launcherFor {
-                languageVersion.set(JavaLanguageVersion.of(25))
-                vendor.set(JvmVendorSpec.JETBRAINS)
-            }.get().metadata.installationPath.asFile.absolutePath
+// Packaging is Nucleus' (a fork of Compose Desktop's that packages through electron-builder, so it needs Node.js).
+// The Compose plugin stays applied for the compiler, dependencies and hot reload, but must not get an
+// `application { }` block of its own.
+nucleus.application {
+    mainClass = "com.programmersbox.scrcpyviewer.MainKt"
+    // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
+    // so the app runs on JBR 25; Gradle auto-provisions it via foojay. Compilation stays on jvmToolchain(21).
+    // javaHome is a plain String, so resolve JBR 25 only when a run or packaging task is requested; tests,
+    // CI test jobs and IDE sync then never download it.
+    if (needsAppRuntime) {
+        javaHome = javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+            vendor.set(JvmVendorSpec.JETBRAINS)
+        }.get().metadata.installationPath.asFile.absolutePath
+    }
+    // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
+    jvmArgs += "--enable-native-access=ALL-UNNAMED"
+    // It also warns when javacpp's indexers call the terminally deprecated sun.misc.Unsafe memory methods.
+    jvmArgs += "--sun-misc-unsafe-memory-access=allow"
+    // Local update tests only: -PupdateFeed=http://127.0.0.1:<port> bakes a loopback update feed into the package
+    // and -PdataDir an isolated data dir. See docs/nucleus-migration-report.md.
+    (findProperty("updateFeed") as String?)?.let { jvmArgs += "-Dscrcpyviewer.updateFeed=$it" }
+    (findProperty("dataDir") as String?)?.let { jvmArgs += "-Dscrcpyviewer.dataDir=$it" }
+    nativeDistributions {
+        // One updatable installer per OS. macOS also ships a ZIP: Nucleus' updater replaces the .app from it, and
+        // the DMG is for first installs. Zip would build on every host, so the formats are picked per host.
+        when {
+            hostOs.contains("mac") -> targetFormats(TargetFormat.Dmg, TargetFormat.Zip)
+            hostOs.contains("win") -> targetFormats(TargetFormat.Nsis)
+            else -> targetFormats(TargetFormat.Deb)
         }
-        // JDK 25 warns when JNI libraries (skiko, javacpp / ffmpeg) load without this.
-        jvmArgs += "--enable-native-access=ALL-UNNAMED"
-        // It also warns when javacpp's indexers call the terminally deprecated sun.misc.Unsafe memory methods.
-        jvmArgs += "--sun-misc-unsafe-memory-access=allow"
-        nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "ScrcpyViewer"
-            modules("java.instrument", "java.management", "jdk.unsupported", "java.net.http")
-            packageVersion = appVersion
-            appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
-            macOS {
-                iconFile.set(project.file("icons/icon.icns"))
-                // Without these, macOS Local Network privacy silently blocks the bundled adb server from reaching
-                // phones over Wi-Fi ("No route to host") and from discovering them through mDNS.
-                infoPlist {
-                    extraKeysRawXml = """
-                        <key>NSLocalNetworkUsageDescription</key>
-                        <string>Scrcpy Viewer connects to Android devices on your network for wireless debugging.</string>
-                        <key>NSBonjourServices</key>
-                        <array>
-                            <string>_adb-tls-pairing._tcp</string>
-                            <string>_adb-tls-connect._tcp</string>
-                        </array>
-                    """.trimIndent()
-                }
+        packageName = "ScrcpyViewer"
+        packageVersion = appVersion
+        // For example ScrcpyViewer-1.6.0-mac-arm64.dmg; the plugin adds -nsis before .exe. Nucleus' updater picks
+        // the file by extension (and that suffix) and by the arch in the name.
+        artifactName = "ScrcpyViewer-\${version}-\${os}-\${arch}.\${ext}"
+        modules("java.instrument", "java.management", "jdk.unsupported", "java.net.http")
+        appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
+        // Writes latest-mac.yml / latest.yml / latest-linux.yml next to the installers. Nothing is uploaded from
+        // Gradle (publishMode stays Never); the release job in CI publishes them.
+        publish {
+            github {
+                enabled = true
+                owner = "jakepurple13"
+                repo = "ScrcpyViewerV2"
+                channel = ReleaseChannel.Latest
+                releaseType = ReleaseType.Release
             }
-            windows {
-                iconFile.set(project.file("icons/icon.ico"))
-                // Never change: MSI upgrades replace the install in place only while this matches.
-                upgradeUuid = "5A4366BB-0831-3135-9B79-0A0955635DB7"
+        }
+        macOS {
+            // The id jpackage derived from the main class until 1.5.0. Keeping it keeps macOS privacy grants
+            // (Local Network) across updates.
+            bundleID = "com.programmersbox.scrcpyviewer"
+            iconFile.set(project.file("icons/icon.icns"))
+            // Without these, macOS Local Network privacy silently blocks the bundled adb server from reaching
+            // phones over Wi-Fi ("No route to host") and from discovering them through mDNS.
+            infoPlist {
+                extraKeysRawXml = """
+                    <key>NSLocalNetworkUsageDescription</key>
+                    <string>Scrcpy Viewer connects to Android devices on your network for wireless debugging.</string>
+                    <key>NSBonjourServices</key>
+                    <array>
+                        <string>_adb-tls-pairing._tcp</string>
+                        <string>_adb-tls-connect._tcp</string>
+                    </array>
+                """.trimIndent()
             }
-            // Debian package names must be lowercase.
-            linux {
-                packageName = "scrcpyviewer"
-                iconFile.set(project.file("icons/icon.png"))
+        }
+        windows {
+            iconFile.set(project.file("icons/icon.ico"))
+            // Per-user one-click install under %LOCALAPPDATA%\Programs, so installing an update needs no UAC prompt.
+            nsis {
+                oneClick = true
+                perMachine = false
             }
+        }
+        // Debian package names must be lowercase.
+        linux {
+            packageName = "scrcpyviewer"
+            iconFile.set(project.file("icons/icon.png"))
         }
     }
 }
