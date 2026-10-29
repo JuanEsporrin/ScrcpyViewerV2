@@ -3,7 +3,6 @@ package com.programmersbox.scrcpyviewer.ui.update
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.programmersbox.scrcpyviewer.ui.common.defaultViewModelScope
-import com.programmersbox.scrcpyviewer.update.InstallTarget
 import com.programmersbox.scrcpyviewer.update.Release
 import com.programmersbox.scrcpyviewer.update.UpdateManager
 import com.programmersbox.scrcpyviewer.update.UpdateState
@@ -25,8 +24,10 @@ data class UpdateUiState(
     val available: Release? = null,
     val currentVersion: String = "",
     val lastChecked: Instant? = null,
-    /** What the last update helper reported when it failed; shown once in Settings. */
+    /** Set when the last update did not install; shown once in Settings and the popup. */
     val previousFailure: String? = null,
+    /** The version this copy was updated from, on the first launch after an update; shown in Settings. */
+    val updatedFrom: String? = null,
     /** Where "Download from GitHub" and "View release notes" go. */
     val releasePageUrl: String = releasePageUrl(null),
     val showPopup: Boolean = false,
@@ -34,7 +35,7 @@ data class UpdateUiState(
     val macNotInApplications: Boolean = false,
 )
 
-/** Shortest gap between two download progress updates shown; the downloader reports every 64 KiB. */
+/** Shortest gap between two download progress updates shown; Nucleus reports every 8 KiB read. */
 private const val PROGRESS_INTERVAL_MILLIS = 100L
 
 @KoinViewModel
@@ -57,12 +58,22 @@ class UpdateViewModel(
             currentVersion = manager.currentVersion,
             lastChecked = lastChecked,
             previousFailure = manager.previousFailure,
+            updatedFrom = manager.updatedFrom,
             releasePageUrl = releasePageUrl(available),
             showPopup = available != null && !dismissed && state !is UpdateState.UpToDate,
             canSelfUpdate = available?.let(manager::canSelfUpdate) ?: false,
-            macNotInApplications = manager.target == InstallTarget.NotUpdatable(InstallTarget.Reason.MacNotInApplications),
+            macNotInApplications = manager.macNotInApplications,
         )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, UpdateUiState(currentVersion = manager.currentVersion))
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        UpdateUiState(
+            currentVersion = manager.currentVersion,
+            previousFailure = manager.previousFailure,
+            updatedFrom = manager.updatedFrom,
+            macNotInApplications = manager.macNotInApplications,
+        ),
+    )
 
     fun check() = manager.check(userInitiated = true)
 

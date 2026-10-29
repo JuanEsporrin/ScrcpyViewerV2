@@ -1,11 +1,15 @@
 package com.programmersbox.scrcpyviewer.update
 
 import com.programmersbox.scrcpyviewer.APP_VERSION
+import com.programmersbox.scrcpyviewer.Os
+import dev.nucleusframework.updater.UpdateEvent
+import dev.nucleusframework.updater.UpdateInfo
+import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.Version
+import dev.nucleusframework.updater.exception.NoMatchingFileException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,10 +17,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.nio.file.Files
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.nio.file.Path
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 sealed interface UpdateState {
     data object Idle : UpdateState
@@ -24,31 +29,33 @@ sealed interface UpdateState {
     data object UpToDate : UpdateState
     data class Available(val release: Release) : UpdateState
     data class Downloading(val release: Release, val read: Long, val total: Long) : UpdateState
-    /** The helper has started; the app should quit so it can install. */
+    /** Downloaded and verified; the app should quit, then `main()` calls [UpdateManager.installPending]. */
     data class Installing(val release: Release) : UpdateState
     data class Failed(val message: String, val release: Release?) : UpdateState
 }
 
 /**
- * Checks for, downloads and hands off app updates. It lives as long as the app: the popup, the badge and
- * Settings share it, and `main()` quits once it reaches [UpdateState.Installing].
+ * Checks for, downloads and installs app updates through Nucleus' updater ([UpdateBackend]). It lives as long as
+ * the app: the popup, the badge and Settings share it, `main()` quits once it reaches [UpdateState.Installing] and
+ * then calls [installPending].
  */
 class UpdateManager(
-    private val source: ReleaseSource,
-    private val downloader: UpdateDownloader,
-    private val installer: UpdateInstaller,
-    val target: InstallTarget,
-    private val updatesDir: Path,
+    private val backend: UpdateBackend,
     private val scope: CoroutineScope,
     val currentVersion: String = APP_VERSION,
-    private val platform: UpdatePlatform = UpdatePlatform.detect(),
     private val bundledAdbInUse: () -> Path?,
+    /** The app runs from a mounted disk image or App Translocation, where its `.app` cannot be replaced. */
+    val macNotInApplications: Boolean = macRunningOutsideApplications(),
+    private val repo: String = updateRepo(),
     private val now: () -> Instant = Instant::now,
+    /** How long the check waits for release notes before showing the release without them. */
+    private val notesTimeoutMs: Long = 10_000,
 ) {
     // Guards every state change, so a check or update started while another is running is ignored.
     private val lock = Any()
     private var downloadJob: Job? = null
-    private var launching = false
+    private var pendingInfo: UpdateInfo? = null
+    private var pendingFile: File? = null
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -66,33 +73,36 @@ class UpdateManager(
     /** True once "Later" is chosen; for this launch only. */
     val popupDismissed: StateFlow<Boolean> = _popupDismissed.asStateFlow()
 
-    /** What the last update helper wrote to `last-error.txt`; the file is deleted once read. */
-    val previousFailure: String? = runCatching {
-        val file = updatesDir.resolve(LAST_ERROR)
-        if (Files.exists(file)) Files.readString(file).trim().also { Files.delete(file) } else null
-    }.getOrNull()
+    /** Whether this copy can install updates at all; see [canSelfUpdate] for a given release. */
+    private val canInstall: Boolean = backend.canInstall && !macNotInApplications
 
-    init {
-        deleteOldDownloads()
-    }
-
-    /** Removes the version folders (`1.4.0`) of installers already installed or older than this build. */
-    private fun deleteOldDownloads() {
-        val current = Version.parse(currentVersion) ?: return
-        runCatching {
-            Files.newDirectoryStream(updatesDir) { Files.isDirectory(it) }.use { dirs ->
-                for (dir in dirs) {
-                    val version = Version.parse(dir.fileName.toString()) ?: continue
-                    if (version <= current) dir.toFile().deleteRecursively()
-                }
-            }
-        }.onFailure { log.log(System.Logger.Level.WARNING, "Could not clean old downloads", it) }
-    }
-
+    /**
+     * Whether "Update now" is offered for [release]; otherwise the UI offers "Download from GitHub". False when the
+     * release has no installer for this OS or architecture.
+     */
     fun canSelfUpdate(release: Release): Boolean =
-        target is InstallTarget.Updatable && release.assetFor(platform) != null
+        canInstall && synchronized(lock) { pendingInfo?.version == release.version }
 
-    /** Asks the release source for the latest release. A failure is shown only when [userInitiated]. */
+    // A dev run (`./gradlew run`) reads the same marker as the installed app, so it leaves it for that app.
+    private val lastUpdate: UpdateEvent? = if (!backend.canInstall) {
+        null
+    } else {
+        runCatching { backend.consumeUpdateEvent() }
+            .onFailure { log.log(System.Logger.Level.WARNING, "Could not read the update marker", it) }
+            .getOrNull()
+    }
+
+    /**
+     * Nucleus writes `old -> new` just before it installs. Launching on any other version than `new` means the
+     * install did not happen (Nucleus keeps its own log in a temp dir, so there is no reason to show).
+     */
+    val previousFailure: String? =
+        lastUpdate?.takeIf { it.newVersion != currentVersion }?.let { "Updating to ${it.newVersion} did not complete." }
+
+    /** The version this copy was updated from, on the first launch after a successful update. */
+    val updatedFrom: String? = lastUpdate?.takeIf { it.newVersion == currentVersion }?.previousVersion
+
+    /** Asks for the latest release. A failure is shown only when [userInitiated]. */
     fun check(userInitiated: Boolean) {
         val previous = synchronized(lock) {
             val current = _state.value
@@ -104,13 +114,23 @@ class UpdateManager(
         }
         scope.launch {
             try {
-                val release = source.latest()
-                val current = Version.parse(currentVersion)
-                val newer = release.version?.let { current == null || it > current } == true
+                val (info, found) = when (val result = backend.check()) {
+                    is UpdateResult.Available -> result.info to result.info.toRelease(repo)
+                    is UpdateResult.NotAvailable -> null to null
+                    is UpdateResult.Error -> {
+                        // A newer release with no file for this OS or arch: offer it, only for download from GitHub.
+                        if (result.exception !is NoMatchingFileException) throw result.exception
+                        null to backend.latestVersion()?.takeIf(::isNewer)?.let { releaseFor(it, repo) }
+                    }
+                }
+                // The update metadata has no notes. Fetching them is best effort and never delays the popup long.
+                val notes = found?.let { releaseNotes(it.version) }
                 synchronized(lock) {
-                    _available.value = if (newer) release else null
+                    val release = found?.copy(body = notes)
+                    pendingInfo = info
+                    _available.value = release
                     _lastChecked.value = now()
-                    _state.value = if (newer) UpdateState.Available(release) else UpdateState.UpToDate
+                    _state.value = release?.let(UpdateState::Available) ?: UpdateState.UpToDate
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -127,7 +147,7 @@ class UpdateManager(
         }
     }
 
-    /** Downloads the release shown in [UpdateState.Available] (or a failed one), then starts the helper. */
+    /** Downloads the release shown in [UpdateState.Available] (or a failed one); Installing once verified. */
     fun startUpdate() {
         synchronized(lock) {
             val release = when (val current = _state.value) {
@@ -135,65 +155,100 @@ class UpdateManager(
                 is UpdateState.Failed -> current.release
                 else -> null
             } ?: return
-            if (!canSelfUpdate(release)) return
-            val asset = release.assetFor(platform) ?: return
-            val version = release.version ?: return
-            _state.value = UpdateState.Downloading(release, 0, asset.size)
-            downloadJob = scope.launch { download(release, asset, version) }
+            if (!canInstall) return
+            val info = pendingInfo?.takeIf { it.version == release.version } ?: return
+            _state.value = UpdateState.Downloading(release, 0, info.currentFile.size)
+            downloadJob = scope.launch { download(release, info) }
         }
     }
 
-    private suspend fun download(release: Release, asset: ReleaseAsset, version: Version) {
-        val ctx = currentCoroutineContext()
-        val job = ctx.job
+    private suspend fun download(release: Release, info: UpdateInfo) {
+        val job = currentCoroutineContext().job
         try {
-            val file = downloader.download(asset, version) { read, total ->
-                synchronized(lock) { if (job.isActive) _state.value = UpdateState.Downloading(release, read, total) }
+            var file: File? = null
+            backend.download(info).collect { progress ->
+                synchronized(lock) {
+                    if (job.isActive) {
+                        _state.value = UpdateState.Downloading(release, progress.bytesDownloaded, progress.totalBytes)
+                    }
+                }
+                progress.file?.let { file = it }
             }
+            val downloaded = file ?: error("Download finished without a file")
             synchronized(lock) {
-                ctx.ensureActive()
-                launching = true
+                job.ensureActive()
+                pendingFile = downloaded
+                _state.value = UpdateState.Installing(release)
             }
-            // Once the helper may be running, finish the launch even if the scope is cancelled.
-            withContext(NonCancellable + Dispatchers.IO) {
-                installer.launch(
-                    InstallRequest(
-                        target = target as InstallTarget.Updatable,
-                        installer = file,
-                        updatesDir = updatesDir,
-                        pid = ProcessHandle.current().pid(),
-                        bundledAdb = bundledAdbInUse(),
-                    ),
-                )
-            }
-            synchronized(lock) { _state.value = UpdateState.Installing(release) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             synchronized(lock) {
                 if (job.isActive) _state.value = UpdateState.Failed(e.message ?: "Update failed", release)
             }
-        } finally {
-            synchronized(lock) { launching = false }
         }
     }
 
-    /** Stops the download and goes back to [UpdateState.Available]. Too late once the helper is being started. */
+    /** Stops the download and goes back to [UpdateState.Available]. */
     fun cancel() {
         synchronized(lock) {
             val current = _state.value as? UpdateState.Downloading ?: return
-            if (launching) return
             downloadJob?.cancel()
             downloadJob = null
             _state.value = UpdateState.Available(current.release)
         }
     }
 
+    /**
+     * Called by `main()` once the windows have closed and the sessions have ended; returns at once when nothing was
+     * downloaded. Stops the app's own adb server (a running adb inside the install folder would block the Windows
+     * installer), then hands off to Nucleus, which starts its install script and exits the JVM.
+     */
+    fun installPending() {
+        val file = synchronized(lock) { pendingFile } ?: return
+        bundledAdbInUse()?.let { adb ->
+            runCatching {
+                ProcessBuilder(adb.toString(), "kill-server")
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+                    .waitFor(5, TimeUnit.SECONDS)
+            }.onFailure { log.log(System.Logger.Level.WARNING, "adb kill-server failed; installing anyway", it) }
+        }
+        runCatching { backend.installAndRestart(file) }
+            .onFailure { log.log(System.Logger.Level.ERROR, "Could not start the update installer", it) }
+    }
+
     fun dismissPopup() {
         _popupDismissed.value = true
     }
 
+    /** Null when the notes cannot be had within [notesTimeoutMs]; never fails the check. */
+    private suspend fun releaseNotes(version: String): String? = try {
+        withTimeoutOrNull(notesTimeoutMs) { backend.releaseNotes(version) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.log(System.Logger.Level.INFO, "No release notes for $version", e)
+        null
+    }
+
+    private fun isNewer(version: String): Boolean =
+        runCatching { Version.fromString(version) > Version.fromString(currentVersion) }.getOrDefault(false)
+
     private companion object {
         val log: System.Logger = System.getLogger("scrcpyviewer.Update")
     }
+}
+
+/**
+ * True on macOS when the app runs straight from the mounted DMG or from App Translocation (a quarantined app opened
+ * outside Applications): Nucleus would try to replace a read-only or temporary copy there.
+ */
+internal fun macRunningOutsideApplications(
+    appPath: String? = System.getProperty("jpackage.app-path"),
+    isMac: Boolean = Os.isMac,
+): Boolean {
+    if (!isMac || appPath.isNullOrBlank()) return false
+    return appPath.startsWith("/Volumes/") || "/AppTranslocation/" in appPath
 }

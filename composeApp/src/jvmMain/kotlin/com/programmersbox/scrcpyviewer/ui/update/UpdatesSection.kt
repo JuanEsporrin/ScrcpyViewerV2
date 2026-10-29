@@ -44,6 +44,12 @@ fun UpdatesContent(
     val busy = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Current version ${ui.currentVersion}", style = MaterialTheme.typography.bodyMedium)
+        ui.updatedFrom?.let {
+            Text(
+                "Updated from $it.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         ui.available?.let { release ->
             Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
