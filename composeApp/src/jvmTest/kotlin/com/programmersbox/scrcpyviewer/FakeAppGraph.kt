@@ -32,6 +32,10 @@ class FakeAdbClient(private val payload: String = FAKE_DEVICES_PAYLOAD) : AdbCli
     override fun startProcess(vararg args: String): Process = error("no real adb in tests")
 }
 
-/** An [AppGraph] on a fresh temp data dir with [FakeAdbClient]; cancel its scope when done. */
+/**
+ * An [AppGraph] on a fresh temp data dir with [FakeAdbClient]; cancel its scope when done.
+ * The first-run guide is marked seen so it does not cover the app.
+ */
 fun fakeAppGraph(dataDir: Path = Files.createTempDirectory("scrcpyviewer-test")): AppGraph =
     AppGraph(dataDir = dataDir, adbClientFactory = { FakeAdbClient() })
+        .also { graph -> graph.settings.update { it.copy(onboardingSeen = true) } }

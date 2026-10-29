@@ -81,6 +81,9 @@ class SettingsViewModel(
     /** Read when a window opens, so it applies to windows opened after this. */
     fun setUseSystemTitleBar(value: Boolean) = appSettings.update { it.copy(useSystemTitleBar = value) }
 
+    /** Reopens the first-run guide; it marks itself seen again when closed. */
+    fun showOnboarding() = appSettings.update { it.copy(onboardingSeen = false) }
+
     /** `null` clears the default preset. */
     fun setDefaultPreset(id: String?) = presets.setDefault(id)
 

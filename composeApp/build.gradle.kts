@@ -11,7 +11,7 @@ plugins {
 }
 
 // Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
-val appVersion = "1.3.1"
+val appVersion = "1.4.0"
 
 val generateAppVersion = tasks.register("generateAppVersion") {
     val version = appVersion
