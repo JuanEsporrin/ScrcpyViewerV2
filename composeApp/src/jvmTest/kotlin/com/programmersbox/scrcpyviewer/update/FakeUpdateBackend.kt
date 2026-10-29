@@ -23,8 +23,14 @@ class FakeUpdateBackend(
     private val downloadBlock: suspend (emit: suspend (DownloadProgress) -> Unit) -> Unit = { emit ->
         emit(DownloadProgress(100, 100, 100.0, file = File("ScrcpyViewer-1.5.0-mac-arm64.zip")))
     },
+    private val latest: suspend () -> String? = { null },
+    private val notes: suspend (version: String) -> String? = { null },
     private val result: suspend () -> UpdateResult = { awaitCancellation() },
 ) : UpdateBackend {
+    override suspend fun latestVersion(): String? = latest()
+
+    override suspend fun releaseNotes(version: String): String? = notes(version)
+
     val checks = AtomicInteger()
     val downloads = AtomicInteger()
     val downloadStarted = CompletableDeferred<Unit>()

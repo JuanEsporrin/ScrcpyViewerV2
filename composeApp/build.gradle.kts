@@ -135,6 +135,10 @@ nucleus.application {
             hostOs.contains("win") -> targetFormats(TargetFormat.Nsis)
             else -> targetFormats(TargetFormat.Deb)
         }
+        // Never change packageName (or add windows/linux packageName overrides beyond the one below). It derives the
+        // Windows electron-builder appId `com.app.ScrcpyViewer`, which NSIS uses to recognise an existing install, so a
+        // change installs a second copy instead of upgrading. It is also Nucleus' app id on Windows (and Linux, via
+        // linux.packageName), which names the folder of its update marker.
         packageName = "ScrcpyViewer"
         packageVersion = appVersion
         // For example ScrcpyViewer-1.6.0-mac-arm64.dmg; the plugin adds -nsis before .exe. Nucleus' updater picks

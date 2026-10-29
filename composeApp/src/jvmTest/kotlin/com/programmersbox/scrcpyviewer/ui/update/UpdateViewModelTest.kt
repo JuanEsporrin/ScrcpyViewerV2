@@ -6,6 +6,8 @@ import com.programmersbox.scrcpyviewer.update.UpdateManager
 import com.programmersbox.scrcpyviewer.update.UpdateState
 import dev.nucleusframework.updater.UpdateEvent
 import dev.nucleusframework.updater.UpdateLevel
+import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.exception.NoMatchingFileException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,6 +75,23 @@ class UpdateViewModelTest {
         assertTrue(ui.showPopup)
         assertFalse(ui.canSelfUpdate)
         assertFalse(ui.macNotInApplications)
+    }
+
+    @Test
+    fun `release with no file for this OS offers GitHub and shows its notes`() {
+        val manager = UpdateManager(
+            backend = FakeUpdateBackend(latest = { "1.6.0" }, notes = { "- Notes" }) {
+                UpdateResult.Error(NoMatchingFileException("Linux", "ARM64", "deb"))
+            },
+            scope = managerScope,
+            currentVersion = "1.5.0",
+            bundledAdbInUse = { null },
+            macNotInApplications = false,
+        )
+        val ui = UpdateViewModel(manager, vmScope).checkAndAwaitAvailable()
+        assertTrue(ui.showPopup)
+        assertFalse(ui.canSelfUpdate)
+        assertEquals("- Notes", ui.available?.body)
     }
 
     @Test

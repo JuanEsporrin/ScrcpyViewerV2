@@ -5,6 +5,8 @@ import com.programmersbox.scrcpyviewer.Os
 import dev.nucleusframework.updater.UpdateEvent
 import dev.nucleusframework.updater.UpdateInfo
 import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.Version
+import dev.nucleusframework.updater.exception.NoMatchingFileException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.nio.file.Path
 import java.time.Instant
@@ -45,6 +48,8 @@ class UpdateManager(
     val macNotInApplications: Boolean = macRunningOutsideApplications(),
     private val repo: String = updateRepo(),
     private val now: () -> Instant = Instant::now,
+    /** How long the check waits for release notes before showing the release without them. */
+    private val notesTimeoutMs: Long = 10_000,
 ) {
     // Guards every state change, so a check or update started while another is running is ignored.
     private val lock = Any()
@@ -68,12 +73,24 @@ class UpdateManager(
     /** True once "Later" is chosen; for this launch only. */
     val popupDismissed: StateFlow<Boolean> = _popupDismissed.asStateFlow()
 
-    /** Whether "Update now" is offered; otherwise the UI offers "Download from GitHub". */
-    val canSelfUpdate: Boolean = backend.canInstall && !macNotInApplications
+    /** Whether this copy can install updates at all; see [canSelfUpdate] for a given release. */
+    private val canInstall: Boolean = backend.canInstall && !macNotInApplications
 
-    private val lastUpdate: UpdateEvent? = runCatching { backend.consumeUpdateEvent() }
-        .onFailure { log.log(System.Logger.Level.WARNING, "Could not read the update marker", it) }
-        .getOrNull()
+    /**
+     * Whether "Update now" is offered for [release]; otherwise the UI offers "Download from GitHub". False when the
+     * release has no installer for this OS or architecture.
+     */
+    fun canSelfUpdate(release: Release): Boolean =
+        canInstall && synchronized(lock) { pendingInfo?.version == release.version }
+
+    // A dev run (`./gradlew run`) reads the same marker as the installed app, so it leaves it for that app.
+    private val lastUpdate: UpdateEvent? = if (!backend.canInstall) {
+        null
+    } else {
+        runCatching { backend.consumeUpdateEvent() }
+            .onFailure { log.log(System.Logger.Level.WARNING, "Could not read the update marker", it) }
+            .getOrNull()
+    }
 
     /**
      * Nucleus writes `old -> new` just before it installs. Launching on any other version than `new` means the
@@ -97,11 +114,19 @@ class UpdateManager(
         }
         scope.launch {
             try {
-                val result = backend.check()
-                if (result is UpdateResult.Error) throw result.exception
+                val (info, found) = when (val result = backend.check()) {
+                    is UpdateResult.Available -> result.info to result.info.toRelease(repo)
+                    is UpdateResult.NotAvailable -> null to null
+                    is UpdateResult.Error -> {
+                        // A newer release with no file for this OS or arch: offer it, only for download from GitHub.
+                        if (result.exception !is NoMatchingFileException) throw result.exception
+                        null to backend.latestVersion()?.takeIf(::isNewer)?.let { releaseFor(it, repo) }
+                    }
+                }
+                // The update metadata has no notes. Fetching them is best effort and never delays the popup long.
+                val notes = found?.let { releaseNotes(it.version) }
                 synchronized(lock) {
-                    val info = (result as? UpdateResult.Available)?.info
-                    val release = info?.toRelease(repo)
+                    val release = found?.copy(body = notes)
                     pendingInfo = info
                     _available.value = release
                     _lastChecked.value = now()
@@ -130,7 +155,7 @@ class UpdateManager(
                 is UpdateState.Failed -> current.release
                 else -> null
             } ?: return
-            if (!canSelfUpdate) return
+            if (!canInstall) return
             val info = pendingInfo?.takeIf { it.version == release.version } ?: return
             _state.value = UpdateState.Downloading(release, 0, info.currentFile.size)
             downloadJob = scope.launch { download(release, info) }
@@ -197,6 +222,19 @@ class UpdateManager(
     fun dismissPopup() {
         _popupDismissed.value = true
     }
+
+    /** Null when the notes cannot be had within [notesTimeoutMs]; never fails the check. */
+    private suspend fun releaseNotes(version: String): String? = try {
+        withTimeoutOrNull(notesTimeoutMs) { backend.releaseNotes(version) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log.log(System.Logger.Level.INFO, "No release notes for $version", e)
+        null
+    }
+
+    private fun isNewer(version: String): Boolean =
+        runCatching { Version.fromString(version) > Version.fromString(currentVersion) }.getOrDefault(false)
 
     private companion object {
         val log: System.Logger = System.getLogger("scrcpyviewer.Update")

@@ -29,6 +29,7 @@ class UpdateScreenshotTest {
 
     private val release = Release(
         version = "1.6.0",
+        body = "- Auto-update\n- Fix Wi-Fi pairing timeout",
         htmlUrl = "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.6.0",
     )
 

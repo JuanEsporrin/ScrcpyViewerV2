@@ -61,7 +61,7 @@ class UpdateViewModel(
             updatedFrom = manager.updatedFrom,
             releasePageUrl = releasePageUrl(available),
             showPopup = available != null && !dismissed && state !is UpdateState.UpToDate,
-            canSelfUpdate = available != null && manager.canSelfUpdate,
+            canSelfUpdate = available?.let(manager::canSelfUpdate) ?: false,
             macNotInApplications = manager.macNotInApplications,
         )
     }.stateIn(
