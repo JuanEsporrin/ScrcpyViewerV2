@@ -1,5 +1,15 @@
 package com.programmersbox.scrcpyviewer.ui.devices
 
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.animateBounds
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.LookaheadScope
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -438,9 +448,14 @@ private fun OptionsPane(
                 Text("No options match.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
             } else {
                 val (left, right) = remember(state.visibleOptions) { splitColumns(state.visibleOptions) }
-                Row(Modifier.fillMaxSize().verticalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                    OptionColumn(left, state, onToggle, onValue, Modifier.weight(1f))
-                    OptionColumn(right, state, onToggle, onValue, Modifier.weight(1f))
+                Box(Modifier.fillMaxSize().verticalScroll(scroll)) {
+                    LookaheadScope {
+                        val items = rememberOptionItems(this, state, onToggle, onValue)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                            OptionColumn(left, items, Modifier.weight(1f))
+                            OptionColumn(right, items, Modifier.weight(1f))
+                        }
+                    }
                 }
             }
         }
@@ -480,34 +495,79 @@ private fun splitColumns(options: List<OptionSpec>): Pair<List<GroupBlock>, List
     return left to blocks.filter { it !in left }
 }
 
+/**
+ * Movable content for every group header and option row, so an item keeps its node (and its bounds animation) when a
+ * search or group filter moves it to a new position, even into the other column.
+ */
+private class OptionItems(
+    val header: (OptionGroup) -> @Composable () -> Unit,
+    val row: (OptionSpec) -> @Composable () -> Unit,
+)
+
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-private fun OptionColumn(
-    blocks: List<GroupBlock>,
+private fun rememberOptionItems(
+    lookahead: LookaheadScope,
     state: DevicesUiState,
     onToggle: (String, Boolean) -> Unit,
     onValue: (String, String) -> Unit,
-    modifier: Modifier,
-) {
+): OptionItems {
+    val currentState by rememberUpdatedState(state)
+    val currentToggle by rememberUpdatedState(onToggle)
+    val currentValue by rememberUpdatedState(onValue)
+    return remember(lookahead) {
+        val headers = HashMap<OptionGroup, @Composable () -> Unit>()
+        val rows = HashMap<String, @Composable () -> Unit>()
+        OptionItems(
+            header = { group ->
+                headers.getOrPut(group) {
+                    movableContentOf {
+                        Text(
+                            group.label.uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.optionMotion(lookahead).padding(top = 10.dp, bottom = 2.dp),
+                        )
+                    }
+                }
+            },
+            row = { spec ->
+                rows.getOrPut(spec.flag) {
+                    movableContentOf {
+                        val s = currentState
+                        OptionRow(
+                            spec = spec,
+                            fieldKey = s.selectedSerial,
+                            checked = spec.flag in s.values.entries,
+                            value = s.values.entries[spec.flag],
+                            error = s.errors[spec.flag],
+                            onCheckedChange = { currentToggle(spec.flag, it) },
+                            onValueChange = { currentValue(spec.flag, it) },
+                            modifier = Modifier.optionMotion(lookahead),
+                        )
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** Slides an option to its new bounds when the visible set changes, and fades it in when it first appears. */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun Modifier.optionMotion(lookahead: LookaheadScope): Modifier {
+    val alpha = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { alpha.animateTo(1f, tween(220)) }
+    return animateBounds(lookahead, boundsTransform = { _, _ -> spring(stiffness = Spring.StiffnessMediumLow) })
+        .graphicsLayer { this.alpha = alpha.value }
+}
+
+@Composable
+private fun OptionColumn(blocks: List<GroupBlock>, items: OptionItems, modifier: Modifier) {
     Column(modifier) {
         blocks.forEach { block ->
-            Text(
-                block.group.label.uppercase(),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
-            )
-            block.options.forEach { spec ->
-                val checked = spec.flag in state.values.entries
-                OptionRow(
-                    spec = spec,
-                    fieldKey = state.selectedSerial,
-                    checked = checked,
-                    value = state.values.entries[spec.flag],
-                    error = state.errors[spec.flag],
-                    onCheckedChange = { onToggle(spec.flag, it) },
-                    onValueChange = { onValue(spec.flag, it) },
-                )
-            }
+            items.header(block.group)()
+            block.options.forEach { spec -> items.row(spec)() }
         }
     }
 }
