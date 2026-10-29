@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.file.Files
 import java.nio.file.Path
@@ -106,6 +107,15 @@ class SettingsViewModel(
         viewModelScope.launch { bundledVersion.value = versionOf { adb.bundledAdb() } }
         appSettings.settings.value.adbPathOverride?.let(::loadCustomVersion)
     }
+
+    private val navState = MutableStateFlow(SettingsNav())
+
+    /** Held here, not in the screen, so the selected category survives rail tab switches. Not persisted. */
+    val nav: StateFlow<SettingsNav> = navState
+
+    fun selectCategory(id: SettingsCategoryId) = navState.update { it.select(id) }
+
+    fun setQuery(query: String) = navState.update { it.withQuery(query) }
 
     fun setTheme(mode: ThemeMode) = appSettings.update { it.copy(themeMode = mode) }
 

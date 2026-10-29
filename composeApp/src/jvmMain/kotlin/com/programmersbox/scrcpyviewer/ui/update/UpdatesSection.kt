@@ -16,13 +16,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
-import com.programmersbox.scrcpyviewer.ui.settings.Section
 import com.programmersbox.scrcpyviewer.update.UpdateState
 import java.time.Duration
 import java.time.Instant
@@ -32,13 +29,7 @@ import java.util.Locale
 
 private val publishedFormat = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US).withZone(ZoneId.systemDefault())
 
-@Composable
-fun UpdatesSection(viewModel: UpdateViewModel) {
-    val ui by viewModel.state.collectAsState()
-    UpdatesContent(ui, viewModel::check, viewModel::update, viewModel::cancel)
-}
-
-/** The Settings "Updates" section. Stateless; [now] is a parameter so screenshots are stable. */
+/** The Settings "Updates" block, without its own header. Stateless; [now] is a parameter so screenshots are stable. */
 @Composable
 fun UpdatesContent(
     ui: UpdateUiState,
@@ -51,7 +42,7 @@ fun UpdatesContent(
     val openReleasePage = { uriHandler.openSafely(ui.releasePageUrl) }
     val state = ui.state
     val busy = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
-    Section("Updates") {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Current version ${ui.currentVersion}", style = MaterialTheme.typography.bodyMedium)
         ui.updatedFrom?.let {
             Text(
@@ -60,7 +51,7 @@ fun UpdatesContent(
             )
         }
         ui.available?.let { release ->
-            Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Version ${release.versionLabel} available", style = MaterialTheme.typography.titleSmall)
                     publishedDate(release.publishedAt)?.let {
