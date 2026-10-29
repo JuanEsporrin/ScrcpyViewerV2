@@ -188,6 +188,8 @@ nucleus.application {
         linux {
             packageName = "scrcpyviewer"
             iconFile.set(project.file("icons/icon.png"))
+            // electron-builder's deb target needs a maintainer; without one it requires an author email instead.
+            debMaintainer = "jakepurple13 <jakepurple13@users.noreply.github.com>"
         }
     }
 }
