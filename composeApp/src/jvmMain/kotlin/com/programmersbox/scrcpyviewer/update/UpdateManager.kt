@@ -72,6 +72,23 @@ class UpdateManager(
         if (Files.exists(file)) Files.readString(file).trim().also { Files.delete(file) } else null
     }.getOrNull()
 
+    init {
+        deleteOldDownloads()
+    }
+
+    /** Removes the version folders (`1.4.0`) of installers already installed or older than this build. */
+    private fun deleteOldDownloads() {
+        val current = Version.parse(currentVersion) ?: return
+        runCatching {
+            Files.newDirectoryStream(updatesDir) { Files.isDirectory(it) }.use { dirs ->
+                for (dir in dirs) {
+                    val version = Version.parse(dir.fileName.toString()) ?: continue
+                    if (version <= current) dir.toFile().deleteRecursively()
+                }
+            }
+        }.onFailure { log.log(System.Logger.Level.WARNING, "Could not clean old downloads", it) }
+    }
+
     fun canSelfUpdate(release: Release): Boolean =
         target is InstallTarget.Updatable && release.assetFor(platform) != null
 

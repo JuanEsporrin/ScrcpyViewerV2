@@ -1,5 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.update
 
+import androidx.compose.ui.platform.UriHandler
 import com.programmersbox.scrcpyviewer.update.InstallTarget
 import com.programmersbox.scrcpyviewer.update.Release
 import com.programmersbox.scrcpyviewer.update.ReleaseAsset
@@ -17,7 +18,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.AfterTest
@@ -30,7 +30,6 @@ class UpdateViewModelTest {
     private val updatesDir = Files.createTempDirectory("updates-vm")
     private val managerScope = CoroutineScope(Job())
     private val vmScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-    private val opened = mutableListOf<URI>()
 
     private val updatable = InstallTarget.Updatable(
         UpdatePlatform.MacArm64,
@@ -63,7 +62,7 @@ class UpdateViewModelTest {
             platform = UpdatePlatform.MacArm64,
             bundledAdbInUse = { null },
         )
-        return UpdateViewModel(manager, opened::add, vmScope)
+        return UpdateViewModel(manager, vmScope)
     }
 
     private fun UpdateViewModel.checkAndAwaitAvailable(): UpdateUiState {
@@ -100,12 +99,35 @@ class UpdateViewModelTest {
     }
 
     @Test
-    fun `openReleasePage opens the html url`() {
+    fun `previous failure reaches the ui state`() {
+        Files.writeString(updatesDir.resolve("last-error.txt"), "Install was canceled.\n")
+        assertEquals("Install was canceled.", vm().state.value.previousFailure)
+    }
+
+    @Test
+    fun `release page url is the release or the latest page`() {
         val vm = vm()
-        vm.openReleasePage()
-        assertTrue(opened.isEmpty(), "nothing to open before a release is known")
-        vm.checkAndAwaitAvailable()
-        vm.openReleasePage()
-        assertEquals(listOf(URI(release.htmlUrl)), opened)
+        assertEquals("https://github.com/jakepurple13/ScrcpyViewerV2/releases/latest", vm.state.value.releasePageUrl)
+        assertEquals(release.htmlUrl, vm.checkAndAwaitAvailable().releasePageUrl)
+    }
+
+    @Test
+    fun `openSafely swallows a failing uri handler`() {
+        val handler = object : UriHandler {
+            override fun openUri(uri: String) = error("no browser")
+        }
+        handler.openSafely("https://example.invalid")
+    }
+
+    @Test
+    fun `openSafely passes the url on`() {
+        val opened = mutableListOf<String>()
+        val handler = object : UriHandler {
+            override fun openUri(uri: String) {
+                opened += uri
+            }
+        }
+        handler.openSafely("https://example.invalid/a")
+        assertEquals(listOf("https://example.invalid/a"), opened)
     }
 }

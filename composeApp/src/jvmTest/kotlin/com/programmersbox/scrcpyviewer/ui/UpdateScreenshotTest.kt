@@ -48,7 +48,7 @@ class UpdateScreenshotTest {
         renderToPng(1280, 800, out, settleMillis = 500) {
             Box {
                 App()
-                ScrcpyViewerTheme(ThemeMode.Light) { UpdateDialog(ui, {}, {}, {}, {}) }
+                ScrcpyViewerTheme(ThemeMode.Light) { UpdateDialog(ui, {}, {}, {}) }
             }
         }
         assertTrue(Files.size(out) > 10_000, "$name should not be blank")
@@ -64,6 +64,12 @@ class UpdateScreenshotTest {
     @Test
     fun `update failed`() =
         render("update-failed.png", ui(UpdateState.Failed("Download failed: connection reset", release)))
+
+    @Test
+    fun `update previous failure`() = render(
+        "update-previous-failure.png",
+        ui(UpdateState.Available(release)).copy(previousFailure = "Install was canceled."),
+    )
 
     @Test
     fun `update without self update`() =

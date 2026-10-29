@@ -20,6 +20,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.ui.settings.Section
 import com.programmersbox.scrcpyviewer.update.UpdateState
@@ -34,7 +35,7 @@ private val publishedFormat = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.
 @Composable
 fun UpdatesSection(viewModel: UpdateViewModel) {
     val ui by viewModel.state.collectAsState()
-    UpdatesContent(ui, viewModel::check, viewModel::update, viewModel::openReleasePage, viewModel::cancel)
+    UpdatesContent(ui, viewModel::check, viewModel::update, viewModel::cancel)
 }
 
 /** The Settings "Updates" section. Stateless; [now] is a parameter so screenshots are stable. */
@@ -43,10 +44,11 @@ fun UpdatesContent(
     ui: UpdateUiState,
     onCheck: () -> Unit,
     onUpdate: () -> Unit,
-    onOpenReleasePage: () -> Unit,
     onCancel: () -> Unit,
     now: Instant = Instant.now(),
 ) {
+    val uriHandler = LocalUriHandler.current
+    val openReleasePage = { uriHandler.openSafely(ui.releasePageUrl) }
     val state = ui.state
     val busy = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
     Section("Updates") {
@@ -66,10 +68,10 @@ fun UpdatesContent(
                         }
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = if (ui.canSelfUpdate) onUpdate else onOpenReleasePage, enabled = !busy) {
-                                Text(if (ui.canSelfUpdate) "Update now" else "Download from GitHub")
+                            if (ui.canSelfUpdate) {
+                                Button(onClick = onUpdate, enabled = !busy) { Text("Update now") }
                             }
-                            TextButton(onClick = onOpenReleasePage) { Text("View release notes") }
+                            TextButton(onClick = openReleasePage) { Text("View release notes") }
                         }
                     }
                 }
@@ -89,12 +91,14 @@ fun UpdatesContent(
                 }
                 Text("Check for updates")
             }
-            ui.lastChecked?.let {
-                Text(
-                    "Last checked ${lastCheckedText(it, now)}",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // Always offered, so a user can get the installer even when self-update is unavailable or a check fails.
+            OutlinedButton(onClick = openReleasePage) { Text("Download from GitHub") }
+        }
+        ui.lastChecked?.let {
+            Text(
+                "Last checked ${lastCheckedText(it, now)}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (state is UpdateState.UpToDate) Text("You're on the latest version.", style = MaterialTheme.typography.bodyMedium)
         val failure = (state as? UpdateState.Failed)?.message ?: ui.previousFailure

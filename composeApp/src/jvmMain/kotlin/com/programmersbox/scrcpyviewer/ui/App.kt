@@ -152,7 +152,6 @@ fun App(
                         ui = update,
                         onLater = updateViewModel::later,
                         onUpdate = updateViewModel::update,
-                        onOpenReleasePage = updateViewModel::openReleasePage,
                         onCancel = updateViewModel::cancel,
                     )
                 }

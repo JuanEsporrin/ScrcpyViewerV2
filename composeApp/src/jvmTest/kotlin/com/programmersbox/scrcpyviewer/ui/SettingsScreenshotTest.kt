@@ -61,7 +61,7 @@ class SettingsScreenshotTest {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                     SettingsContent(
                         state, {}, {}, {}, {}, {}, {}, {},
-                        updates = { UpdatesContent(ui, {}, {}, {}, {}, now) },
+                        updates = { UpdatesContent(ui, {}, {}, {}, now) },
                     )
                 }
             }
@@ -84,6 +84,9 @@ class SettingsScreenshotTest {
 
     @Test
     fun `updates up to date`() = renderUpdates("settings-updates-uptodate.png", updatesUi(UpdateState.UpToDate))
+
+    @Test
+    fun `updates idle`() = renderUpdates("settings-updates-idle.png", updatesUi(UpdateState.Idle, canSelfUpdate = false))
 
     @Test
     fun `updates error`() = renderUpdates(

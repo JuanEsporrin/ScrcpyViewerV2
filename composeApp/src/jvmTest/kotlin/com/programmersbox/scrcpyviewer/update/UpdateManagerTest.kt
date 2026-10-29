@@ -103,6 +103,21 @@ class UpdateManagerTest {
     }
 
     @Test
+    fun `old downloaded version folders are deleted at init`() {
+        for (name in listOf("1.3.0", "1.4.0", "1.5.0", "notes")) {
+            Files.createDirectories(updatesDir.resolve(name))
+            updatesDir.resolve(name).resolve("x.dmg").writeText("x")
+        }
+        updatesDir.resolve("update.log").writeText("log")
+        manager()
+        assertFalse(updatesDir.resolve("1.3.0").exists())
+        assertFalse(updatesDir.resolve("1.4.0").exists())
+        assertTrue(updatesDir.resolve("1.5.0").exists(), "newer version is kept")
+        assertTrue(updatesDir.resolve("notes").exists(), "non-version folder is kept")
+        assertTrue(updatesDir.resolve("update.log").exists())
+    }
+
+    @Test
     fun `newer release becomes Available`() {
         val m = manager()
         m.check(userInitiated = false)

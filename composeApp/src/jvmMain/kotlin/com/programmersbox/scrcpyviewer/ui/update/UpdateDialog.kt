@@ -21,6 +21,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -52,13 +53,13 @@ fun UpdateDialog(
     ui: UpdateUiState,
     onLater: () -> Unit,
     onUpdate: () -> Unit,
-    onOpenReleasePage: () -> Unit,
     onCancel: () -> Unit,
 ) {
     when (val state = ui.state) {
-        is UpdateState.Available -> OfferDialog(state.release, null, ui, onLater, onUpdate, onOpenReleasePage)
+        is UpdateState.Available ->
+            OfferDialog(state.release, ui.previousFailure?.let { "Last update failed: $it" }, ui, onLater, onUpdate)
         is UpdateState.Failed -> (state.release ?: ui.available)?.let {
-            OfferDialog(it, state.message, ui, onLater, onUpdate, onOpenReleasePage)
+            OfferDialog(it, state.message, ui, onLater, onUpdate)
         }
         is UpdateState.Downloading -> ProgressDialog(state.release, state, onCancel)
         is UpdateState.Installing -> ProgressDialog(state.release, null, null)
@@ -85,8 +86,8 @@ private fun OfferDialog(
     ui: UpdateUiState,
     onLater: () -> Unit,
     onUpdate: () -> Unit,
-    onOpenReleasePage: () -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     Dialog(onDismissRequest = onLater) {
         DialogCard {
             Text("Update available", style = MaterialTheme.typography.headlineSmall)
@@ -122,7 +123,7 @@ private fun OfferDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
                 TextButton(onClick = onLater) { Text("Later") }
-                Button(onClick = if (ui.canSelfUpdate) onUpdate else onOpenReleasePage) {
+                Button(onClick = if (ui.canSelfUpdate) onUpdate else ({ uriHandler.openSafely(ui.releasePageUrl) })) {
                     Text(if (ui.canSelfUpdate) "Update now" else "Download from GitHub")
                 }
             }

@@ -7,6 +7,7 @@ import com.programmersbox.scrcpyviewer.update.InstallTarget
 import com.programmersbox.scrcpyviewer.update.Release
 import com.programmersbox.scrcpyviewer.update.UpdateManager
 import com.programmersbox.scrcpyviewer.update.UpdateState
+import com.programmersbox.scrcpyviewer.update.updateRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,8 +16,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transform
 import org.koin.core.annotation.KoinViewModel
-import java.awt.Desktop
-import java.net.URI
 import java.time.Instant
 
 /** What the update popup, the Settings badge and the Settings section show. */
@@ -28,6 +27,8 @@ data class UpdateUiState(
     val lastChecked: Instant? = null,
     /** What the last update helper reported when it failed; shown once in Settings. */
     val previousFailure: String? = null,
+    /** Where "Download from GitHub" and "View release notes" go. */
+    val releasePageUrl: String = releasePageUrl(null),
     val showPopup: Boolean = false,
     val canSelfUpdate: Boolean = false,
     val macNotInApplications: Boolean = false,
@@ -39,7 +40,6 @@ private const val PROGRESS_INTERVAL_MILLIS = 100L
 @KoinViewModel
 class UpdateViewModel(
     private val manager: UpdateManager,
-    private val openUri: (URI) -> Unit = ::browse,
     scope: CoroutineScope = defaultViewModelScope(),
 ) : ViewModel(scope) {
     val state: StateFlow<UpdateUiState> = combine(
@@ -57,6 +57,7 @@ class UpdateViewModel(
             currentVersion = manager.currentVersion,
             lastChecked = lastChecked,
             previousFailure = manager.previousFailure,
+            releasePageUrl = releasePageUrl(available),
             showPopup = available != null && !dismissed && state !is UpdateState.UpToDate,
             canSelfUpdate = available?.let(manager::canSelfUpdate) ?: false,
             macNotInApplications = manager.target == InstallTarget.NotUpdatable(InstallTarget.Reason.MacNotInApplications),
@@ -71,11 +72,8 @@ class UpdateViewModel(
 
     fun later() = manager.dismissPopup()
 
-    fun openReleasePage() {
-        state.value.available?.let { openUri(URI(it.htmlUrl)) }
-    }
 }
 
-private fun browse(uri: URI) {
-    if (Desktop.isDesktopSupported()) Desktop.getDesktop().browse(uri)
-}
+/** The newer release's page, or the repo's latest-release page when none is known. */
+internal fun releasePageUrl(available: Release?): String =
+    available?.htmlUrl ?: "https://github.com/${updateRepo()}/releases/latest"

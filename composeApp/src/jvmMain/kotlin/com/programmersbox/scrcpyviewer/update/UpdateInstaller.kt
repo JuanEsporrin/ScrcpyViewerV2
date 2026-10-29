@@ -161,6 +161,8 @@ object HelperScripts {
             |    fi
             |    if [ "${'$'}rc" -ne 0 ] && [ "${'$'}lost" -eq 0 ]; then
             |      # Copy out of the image as this user, then copy and swap as admin with fixed paths only.
+            |      # Trust: the installer was SHA-256-verified in the app, but sits in a user-writable folder
+            |      # until this elevated step.
             |      rm -rf "${'$'}STAGED"
             |      if ditto "${'$'}MNT/ScrcpyViewer.app" "${'$'}STAGED"; then
             |        out=$(osascript -e ${shQuote(adminSwap)} 2>&1)
@@ -170,7 +172,7 @@ object HelperScripts {
             |      fi
             |      rm -rf "${'$'}STAGED"
             |    fi
-            |    hdiutil detach "${'$'}MNT" || hdiutil detach -force "${'$'}MNT"
+            |    hdiutil detach -quiet "${'$'}MNT" || hdiutil detach -quiet -force "${'$'}MNT"
             |  fi
             |  rmdir "${'$'}MNT"
             |fi
@@ -208,6 +210,8 @@ object HelperScripts {
         |  exit 0
         |fi
         |
+        |# Trust: the installer was SHA-256-verified in the app, but sits in a user-writable folder
+        |# until this elevated step.
         |pkexec dpkg -i "${'$'}DEB"
         |rc=$?
         |case "${'$'}rc" in
@@ -254,6 +258,8 @@ object HelperScripts {
             |    exit 1
             |}
             |$adb
+            |# Trust: the installer was SHA-256-verified in the app, but sits in a user-writable folder
+            |# until this elevated step.
             |try {
             |    ${'$'}p = Start-Process msiexec -ArgumentList '/i', ('"' + ${'$'}msi + '"'), '/passive', '/norestart', '/l*v', ('"' + ${'$'}msiLog + '"') -Verb RunAs -Wait -PassThru
             |    if (${'$'}p.ExitCode -eq 0 -or ${'$'}p.ExitCode -eq 3010) {
@@ -295,7 +301,7 @@ object HelperScripts {
         val old = shQuote(parent.resolve(".ScrcpyViewer.app.old").toString())
         return "test -d $app && rm -rf $new $old && ditto $src $new && mv $app $old && " +
             "{ mv $new $app || { mv $old $app && rm -rf $new; exit 1; }; } && " +
-            "{ rm -rf $old; xattr -dr com.apple.quarantine $app; exit 0; }; " +
+            "{ rm -rf $old; xattr -dr com.apple.quarantine $app 2>/dev/null; exit 0; }; " +
             "rm -rf $new; exit 1"
     }
 
