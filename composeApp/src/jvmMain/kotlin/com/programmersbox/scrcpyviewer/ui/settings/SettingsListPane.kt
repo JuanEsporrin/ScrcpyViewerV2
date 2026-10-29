@@ -1,6 +1,6 @@
 package com.programmersbox.scrcpyviewer.ui.settings
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,9 +22,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,16 +77,17 @@ fun SettingsListPane(
 @Composable
 private fun CategoryItem(title: String, selected: Boolean, count: Int?, badge: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(8.dp)
+    val fill by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent, label = "categoryFill",
+    )
+    val bar by animateColorAsState(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, label = "categoryBar")
     Row(
         Modifier.fillMaxWidth().clip(shape)
-            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .drawBehind { drawRect(fill) }
             .selectable(selected = selected, role = Role.Tab, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier.width(3.dp).height(20.dp)
-                .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(2.dp)),
-        )
+        Box(Modifier.width(3.dp).height(20.dp).clip(RoundedCornerShape(2.dp)).drawBehind { drawRect(bar) })
         Text(
             title, style = MaterialTheme.typography.bodyLarge,
             color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,

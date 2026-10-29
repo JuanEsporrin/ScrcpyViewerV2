@@ -1,5 +1,12 @@
 package com.programmersbox.scrcpyviewer.ui.settings
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -61,10 +68,25 @@ fun SettingsContent(
             updateAvailable = updates.available != null, onQuery = actions.onQuery, onSelect = actions.onSelectCategory,
         )
         VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        SettingsDetailPane(
-            category = match?.category, entries = match?.entries.orEmpty(), query = nav.query,
-            bindings = SettingsBindings(state, updates, actions, isLinux, customTitleBarSupported),
+        val bindings = SettingsBindings(state, updates, actions, isLinux, customTitleBarSupported)
+        // Keyed by category, so filtering rows while typing updates in place instead of re-animating.
+        AnimatedContent(
+            targetState = match,
+            contentKey = { it?.category?.id },
+            transitionSpec = {
+                val from = categories.indexOfFirst { it.id == initialState?.category?.id }
+                val to = categories.indexOfFirst { it.id == targetState?.category?.id }
+                val direction = if (to >= from) 1 else -1
+                (fadeIn(tween(220, delayMillis = 60)) + slideInVertically(tween(220)) { direction * it / 12 })
+                    .togetherWith(fadeOut(tween(120)) + slideOutVertically(tween(120)) { -direction * it / 24 })
+            },
             modifier = Modifier.weight(1f),
-        )
+            label = "settingsCategory",
+        ) { shownMatch ->
+            SettingsDetailPane(
+                category = shownMatch?.category, entries = shownMatch?.entries.orEmpty(), query = nav.query,
+                bindings = bindings,
+            )
+        }
     }
 }
