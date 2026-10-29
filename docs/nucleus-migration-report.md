@@ -14,7 +14,7 @@ Packaging, release CI and the in-app updater now all run on Nucleus 2.5.18.
 
 The UI is the same as on PR #14, with two small additions. The version goes to 1.6.0.
 
-Tests: `./gradlew :composeApp:jvmTest` passes 477 tests, 0 failures. `-Pscreenshots` passes 71 screenshot tests,
+Tests (after the review fixes below): `./gradlew :composeApp:jvmTest` passes 485 tests, 0 failures. `-Pscreenshots` passes 71 screenshot tests,
 0 failures. On macOS, a full update ran by hand: a packaged 1.6.0 checked, downloaded and installed 1.6.1, and
 came back up as 1.6.1.
 
@@ -24,7 +24,7 @@ came back up as 1.6.1.
 |---|---|---|
 | Nucleus plugin (`dev.nucleusframework`) | none | 2.5.18 (latest stable; `3.0.0-dev-*` snapshots exist) |
 | `nucleus.updater-runtime` (+ `core-runtime`) | none | 2.5.18 |
-| Nucleus CI actions | none | `NucleusFramework/Nucleus/.github/actions/*@v2.5.18` |
+| Nucleus CI actions | none | `NucleusFramework/Nucleus/.github/actions/*@765abe7e…` (the v2.5.18 commit) |
 | electron-builder | none | 26.15.5, pinned by the plugin and installed with `npm ci` into the build dir |
 | Node.js | not needed | 24 in CI (via `setup-nucleus`). Packaging locally needs Node; tested with 26.8.2 |
 | Kotlin compiler | 2.3.21 | 2.3.21, **unchanged**. The plugin did not need Kotlin 2.4 |
@@ -109,8 +109,9 @@ The single version catalog key `nucleus` drives both the plugin and the runtime.
   - Otherwise, `previousFailure` = "Updating to X did not complete." It shows in the popup and Settings as before.
 - **`Main.kt`:** `application(exitProcessOnExit = false)`, then `updateManager.installPending()`, then
   `exitProcess(0)`. Sessions close and recordings finish before Nucleus takes over, as in the spike.
-- **`Release`** is now a plain UI model: version, tag page URL, release date.
-  - The yml has no release notes. The popup gets a "Release notes" link when "Update now" is shown (new UI element).
+- **`Release`** is now a plain UI model: version, tag page URL, release date, notes.
+  - The yml has no release notes, so they come from the GitHub API (see "Review fixes", item 3). The popup shows
+    them inline as on PR #14, and also gets a "Release notes" link when "Update now" is shown (new UI element).
     Otherwise the main button already opens the release page.
   - Settings keeps "View release notes" and the always-visible "Download from GitHub" (`LocalUriHandler` +
     `openSafely`).
@@ -124,7 +125,7 @@ The single version catalog key `nucleus` drives both the plugin and the runtime.
 - **`test`** is unchanged: jvmTest on macos-14, windows-latest and ubuntu-latest, with the test-report upload on
   failure.
 - **`build`** runs on the same 3 runners.
-  1. `setup-nucleus@v2.5.18` with JDK 21 for Gradle and Node 24. It also installs fakeroot and the other Linux
+  1. `setup-nucleus` (pinned to the v2.5.18 commit SHA) with JDK 21 for Gradle and Node 24. It also installs fakeroot and the other Linux
      packaging tools.
   2. `./gradlew :composeApp:downloadBundledTools :composeApp:packageDistributionForCurrentOS`.
   3. It uploads `release-assets-{macOS-arm64,Windows-amd64,Linux-amd64}`. Each holds only the installers and their
@@ -134,14 +135,16 @@ The single version catalog key `nucleus` drives both the plugin and the runtime.
   1. It downloads the `release-assets-*` folders.
   2. It **checks that every platform folder has a file named with the tag's version**. A tag that does not match
      `appVersion` would otherwise publish a yml that offers the same update forever.
-  3. `generate-update-yml@v2.5.18` merges the per-platform `latest-*.yml`; on macOS it lists both the DMG and the ZIP.
-  4. `publish-release@v2.5.18` publishes. It creates the release with `--generate-notes` and uploads the binaries
-     and yml files. `GH_REPO` is set because the job does no checkout.
+  3. `generate-update-yml` merges the per-platform `latest-*.yml`; on macOS it lists both the DMG and the ZIP.
+  4. `publish-release` creates the release as a draft with `--generate-notes` and uploads the binaries and yml
+     files. `GH_TOKEN`/`GH_REPO` are set on that step only; `GH_REPO` because the job does no checkout.
+  5. `gh release edit --draft=false` publishes it once everything is uploaded.
 - `softprops/action-gh-release` is gone.
 
 ### Docs
 
-- `docs/nucleus-update-transition.md`: what happens to 1.5.0 users.
+- `docs/nucleus-update-transition.md`: how 1.4.x (and, if released, 1.5.0) users get to 1.6.0, with MSI
+  uninstall steps for the release notes.
 - `README.md`: download table, packaging command, Node requirement, tech stack.
 - A "superseded" note at the top of the PR #14 spec.
 
@@ -160,7 +163,7 @@ and script code.
 ## Verified hands-on (macOS arm64, this machine)
 
 1. **Tests.**
-   - `./gradlew :composeApp:jvmTest`: 477 tests, 0 failures. Run with `--rerun-tasks` on the final code.
+   - `./gradlew :composeApp:jvmTest`: 477 tests, 0 failures before the review fixes (485 after).
    - `-Pscreenshots`: 71 tests, 0 failures. I looked at `update-available.png` (new "Release notes" link) and
      `settings-updates-just-updated.png`.
    - No test touches the network: `withFakeAppKoin` uses a `FakeUpdateBackend` whose check never returns.
@@ -242,25 +245,98 @@ and script code.
    backup, exits 1 and does **not** relaunch. That happens with a root-owned bundle in `/Applications` or a standard
    account. The user reopens the app by hand and sees "Updating to X did not complete."
 3. **Smaller differences from PR #14.**
-   - No inline release notes; the app links to the release page instead.
    - No failure reason: Nucleus' log stays in a temp dir, so only "did not complete" is shown.
    - Linux relaunches even when `dpkg` failed.
    - The integrity check is SHA-512 from the yml (same origin as the file) instead of GitHub's asset digest.
 
-## Transition for 1.5.0 users (see `docs/nucleus-update-transition.md`)
+## Transition (see `docs/nucleus-update-transition.md`)
 
-- **macOS and Linux 1.5.0 users update as before.** Releases still carry a `.dmg` and a `.deb`, and 1.5.0's
-  updater ignores the new ZIP, blockmap and yml assets. From 1.6.0 on they update through Nucleus.
-- **Windows 1.5.0 users get no `.msi`.** Their popup offers only "Download from GitHub". The NSIS install is per
-  user and sits beside the old per-machine MSI install, which has to be uninstalled by hand. Settings are shared
-  (`%APPDATA%\ScrcpyViewer`). The MSI is not coming back.
+v1.5.0 (PR #14) has **not** been tagged; the latest release is v1.4.0. The note covers both orders.
+
+- **This ships right after v1.4.0 (no updater yet).** Every user installs 1.6.0 by hand once, then updates are
+  automatic.
+  - macOS: replace the app from the DMG. The bundle id is unchanged.
+  - Linux: install the `.deb`. The package name stays `scrcpyviewer`, so dpkg should upgrade it in place.
+  - Windows: run the NSIS `.exe`. The old per-machine MSI install stays beside it until uninstalled. The note has
+    ready-to-paste uninstall steps for the v1.6.0 release notes.
+- **v1.5.0 ships first.**
+  - macOS 1.5.0 users update themselves from the `.dmg`.
+  - Linux 1.5.0 users update from the `.deb`. 1.5.0 then relaunches `/opt/scrcpyviewer/bin/ScrcpyViewer`; that
+    path was derived from plugin source, not from a built deb.
+  - Windows 1.5.0 users see no `.msi` and get "Download from GitHub", then the same MSI clean-up as above.
+- The MSI is not coming back.
+
+## Review fixes (after review of `e1337f7..9ab098f`)
+
+Commits `be41c99` (code), `1d45c3a` (CI) and the docs commit that adds this section.
+
+1. **Transition docs.** Rewritten for both orders: v1.5.0 released first, or users going straight from v1.4.x,
+   which is the current latest release. Added user-facing MSI uninstall steps for the v1.6.0 release notes.
+   - Windows marker path: Nucleus' runtime app id on Windows is `windows.packageName ?: packageName` =
+     `ScrcpyViewer` (`JvmApplicationContext.resolvedAppIdProvider`, passed as `-Dnucleus.app.id`). So the marker is
+     in `%APPDATA%\ScrcpyViewer`. `com.app.ScrcpyViewer` is the separate electron-builder `appId` (NSIS identity
+     and AUMID). The note now states both and marks them as read from source.
+   - Linux relaunch path: `/opt/scrcpyviewer/bin/ScrcpyViewer` is derived from plugin source (deb payload under
+     `/opt/${productName}` with `productName = linux.packageName`; launcher `bin/<packageName>`). It is marked
+     unverified.
+2. **CI.**
+   - The three Nucleus actions are pinned to `765abe7e1bc7f4c422cfa094ec0f3905fce367be # v2.5.18`. I checked with
+     `git ls-remote` that this is the tag's commit.
+   - Workflow-level `permissions: contents: read`; the release job keeps `contents: write`.
+   - `GH_TOKEN`/`GH_REPO` are set only on the publishing steps.
+   - actionlint is clean.
+3. **Inline release notes restored.**
+   - `UpdateBackend.releaseNotes(version)` calls `GET {apiBase}/repos/{repo}/releases/tags/v{version}` with
+     `Accept: application/vnd.github+json` and `User-Agent`. `repo` honours `scrcpyviewer.updateRepo` and `apiBase`
+     honours `scrcpyviewer.updateApiBase`, as on PR #14. The call runs on `Dispatchers.IO` with a 5 s connect and
+     10 s request timeout.
+   - `UpdateManager` waits at most 10 s (`notesTimeoutMs`) and treats any exception as "no notes".
+   - The popup's scrollable notes box is back exactly as on PR #14, and the "Release notes" link stays.
+   - PR #14's Settings section never showed inline notes, so it is unchanged.
+   - I checked once by hand that the real endpoint returns a `body` for `v1.4.0`. Tests use fakes and parse fixtures.
+4. **`packageName` comment** in `composeApp/build.gradle.kts`: never change it. It derives the Windows
+   electron-builder appId that NSIS upgrades rely on, and Nucleus' app id that names the marker folder.
+5. **`NoMatchingFileException`** (no published file for this OS or arch) no longer shows "Couldn't check for
+   updates".
+   - Nucleus raises it only after it has found a newer version. The manager then reads the metadata `version:`
+     with the new `UpdateBackend.latestVersion()`, which uses the provider's metadata URL.
+   - If that version is newer, the release is offered with `canSelfUpdate = false` ("Download from GitHub").
+     Otherwise, or if the version can't be read, the result is `UpToDate`.
+   - `canSelfUpdate` is now per release: an installable copy *and* a Nucleus `UpdateInfo` for that version.
+   - Caveat, from Nucleus source: when files exist but none matches the arch, Nucleus falls back to the first file
+     of the format instead of raising. For example a Linux arm64 copy would get the amd64 `.deb`. Not reachable
+     with our x64/arm64-mac builds.
+6. **Dev runs** (`canInstall == false`) no longer call `consumeUpdateEvent()`. The marker belongs to the installed
+   app.
+7. **Draft, then publish.** `publish-release` supports `release-type: draft`, so the release is created as a draft
+   and a final `gh release edit "$GITHUB_REF_NAME" --draft=false` step publishes it once every file is uploaded.
+
+Tests after the fixes:
+
+- `./gradlew :composeApp:jvmTest`: 485 tests, 0 failures.
+- `-Pscreenshots`: 71 tests, 0 failures. I checked `update-available.png`: it shows the notes box with the
+  "Release notes", "Later" and "Update now" buttons.
+- New tests cover:
+  - notes attached;
+  - notes throwing;
+  - notes timing out;
+  - no file for this OS, with a newer or an equal/unreadable version;
+  - the dev-run marker skip;
+  - body and `version:` parsing;
+  - the ViewModel for the no-file case.
+
+The hands-on macOS end-to-end update above ran before these fixes. They do not touch the install path, but the
+check now also asks GitHub for notes, so the loopback-feed test would fetch notes for `v1.6.1` from the real
+GitHub, get 404, and show no notes.
 
 ## The PR description must say
 
 - It is stacked on PR #14 and replaces that PR's updater internals; the UI is unchanged apart from the "Release
-  notes" link and the "Updated from X." line.
-- Windows switches from MSI to an NSIS `.exe`. Windows 1.5.0 users must download it by hand, and the old MSI
-  install stays until it is uninstalled.
+  notes" link and the "Updated from X." line. Inline release notes still come from GitHub.
+- Windows switches from MSI to an NSIS `.exe`. Every Windows user installs it by hand once, and the old MSI
+  install stays until it is uninstalled. Paste the uninstall steps from `docs/nucleus-update-transition.md` into the
+  v1.6.0 release notes.
+- v1.5.0 was never tagged. If this ships next, every user installs 1.6.0 by hand once.
 - Accepted gaps: the Windows job-object risk (untested) and no macOS admin fallback.
 - Packaging needs Node.js locally (`setup-nucleus` handles CI).
 - The `package.json` workaround and its removal condition (Nucleus > 2.5.18).
