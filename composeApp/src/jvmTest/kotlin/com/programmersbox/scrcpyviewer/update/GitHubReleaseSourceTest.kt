@@ -42,6 +42,18 @@ class GitHubReleaseSourceTest {
     }
 
     @Test
+    fun `api base defaults to the updateApiBase system property`() = runBlocking {
+        source(200, resource("update/release-v1.4.0.json"))
+        System.setProperty("scrcpyviewer.updateApiBase", "http://127.0.0.1:${server!!.address.port}")
+        try {
+            val release = GitHubReleaseSource(repo = "o/r").latest()
+            assertEquals("v1.4.0", release.tagName)
+        } finally {
+            System.clearProperty("scrcpyviewer.updateApiBase")
+        }
+    }
+
+    @Test
     fun `rate limited throws UpdateException`() = runBlocking {
         val e = assertFailsWith<UpdateException> { source(403, "{}").latest() }
         assertEquals("GitHub returned HTTP 403", e.message)

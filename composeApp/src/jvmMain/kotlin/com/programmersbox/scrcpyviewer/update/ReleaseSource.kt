@@ -19,8 +19,9 @@ fun interface ReleaseSource {
     suspend fun latest(): Release
 }
 
+/** [apiBase] reads the `scrcpyviewer.updateApiBase` system property so tests can point at a local fake GitHub. */
 class GitHubReleaseSource(
-    private val apiBase: String = "https://api.github.com",
+    private val apiBase: String = System.getProperty("scrcpyviewer.updateApiBase") ?: "https://api.github.com",
     private val repo: String = System.getProperty("scrcpyviewer.updateRepo") ?: "jakepurple13/ScrcpyViewerV2",
     private val http: HttpClient = HttpClient.newBuilder()
         .followRedirects(HttpClient.Redirect.NORMAL)
