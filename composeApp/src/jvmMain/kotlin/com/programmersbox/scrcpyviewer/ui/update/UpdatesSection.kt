@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
-import com.programmersbox.scrcpyviewer.ui.settings.Section
 import com.programmersbox.scrcpyviewer.update.UpdateState
 import java.time.Duration
 import java.time.Instant
@@ -51,10 +50,10 @@ fun UpdatesContent(
     val openReleasePage = { uriHandler.openSafely(ui.releasePageUrl) }
     val state = ui.state
     val busy = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
-    Section("Updates") {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Current version ${ui.currentVersion}", style = MaterialTheme.typography.bodyMedium)
         ui.available?.let { release ->
-            Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Version ${release.versionLabel} available", style = MaterialTheme.typography.titleSmall)
                     publishedDate(release.publishedAt)?.let {
