@@ -16,8 +16,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -31,13 +29,7 @@ import java.util.Locale
 
 private val publishedFormat = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US).withZone(ZoneId.systemDefault())
 
-@Composable
-fun UpdatesSection(viewModel: UpdateViewModel) {
-    val ui by viewModel.state.collectAsState()
-    UpdatesContent(ui, viewModel::check, viewModel::update, viewModel::cancel)
-}
-
-/** The Settings "Updates" section. Stateless; [now] is a parameter so screenshots are stable. */
+/** The Settings "Updates" block, without its own header. Stateless; [now] is a parameter so screenshots are stable. */
 @Composable
 fun UpdatesContent(
     ui: UpdateUiState,

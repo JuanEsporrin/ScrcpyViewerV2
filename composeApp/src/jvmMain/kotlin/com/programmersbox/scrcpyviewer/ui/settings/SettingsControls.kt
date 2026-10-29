@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -126,7 +126,7 @@ internal fun DefaultPresetControl(b: SettingsBindings) {
     var open by remember { mutableStateOf(false) }
     val label = b.state.presets.firstOrNull { it.id == b.state.defaultPresetId }?.name ?: "None"
     Column {
-        OutlinedButton(onClick = { open = true }, modifier = Modifier.widthIn(min = 200.dp)) {
+        OutlinedButton(onClick = { open = true }, modifier = Modifier.width(220.dp)) {
             Text(label, Modifier.weight(1f))
             Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
         }
