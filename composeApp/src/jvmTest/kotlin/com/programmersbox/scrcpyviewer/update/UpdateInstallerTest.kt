@@ -70,7 +70,9 @@ class UpdateInstallerTest {
     @Test
     fun macScriptQuotesPaths() {
         val script = HelperScripts.mac(macRequest)
-        assertTrue("'/Users/Jane O'\\''Doe/Apps/ScrcpyViewer.app'" in script, script)
+        // From the Path itself: on a Windows test host the separators come out as backslashes.
+        assertTrue(shQuote(checkNotNull(macRequest.target.appBundle).toString()) in script, script)
+        assertTrue("Jane O'\\''Doe" in script, script)
         assertFalse(Regex("[^']Jane O'Doe").containsMatchIn(script), script)
     }
 
@@ -106,7 +108,7 @@ class UpdateInstallerTest {
 
         val macAdb = "/Users/Jane O'Doe/Apps/ScrcpyViewer.app/Contents/app/resources/adb"
         val mac = HelperScripts.mac(macRequest.copy(bundledAdb = Paths.get(macAdb)))
-        assertTrue("${shQuote(macAdb)} kill-server" in mac, mac)
+        assertTrue("${shQuote(Paths.get(macAdb).toString())} kill-server" in mac, mac)
 
         val winAdb = "C:\\Program Files\\ScrcpyViewer\\app\\resources\\adb.exe"
         val win = HelperScripts.windows(windowsRequest.copy(bundledAdb = Paths.get(winAdb)))
