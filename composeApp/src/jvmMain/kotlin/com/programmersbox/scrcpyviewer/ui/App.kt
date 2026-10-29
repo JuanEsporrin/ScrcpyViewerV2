@@ -18,29 +18,29 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.programmersbox.scrcpyviewer.AppGraph
+import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
 import com.programmersbox.scrcpyviewer.ui.common.LocalSnackbarHostState
 import com.programmersbox.scrcpyviewer.ui.common.rememberListDetailPanes
+import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
+import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
+import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavDisplay
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavigator
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelRoute
-import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavDisplay
-import com.programmersbox.scrcpyviewer.ui.common.ListDetailPanes
-import com.programmersbox.scrcpyviewer.ui.devices.DevicesScreen
 import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
 import com.programmersbox.scrcpyviewer.ui.settings.AwtSettingsFileDialogs
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsScreen
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
-import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
 import kotlinx.coroutines.flow.filter
-import androidx.compose.runtime.LaunchedEffect
 
 private val TopLevelRoute.label: String
     get() = when (this) {
@@ -80,28 +80,44 @@ fun App(
     ScrcpyViewerTheme(settings.themeMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
-            Row(Modifier.fillMaxSize()) {
-                NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                    TopLevelRoute.all.forEach { route ->
-                        NavigationRailItem(
-                            selected = route == navigator.current,
-                            onClick = { navigator.select(route) },
-                            icon = { Icon(route.icon, contentDescription = route.label) },
-                            label = { Text(route.label) },
+                Row(Modifier.fillMaxSize()) {
+                    NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                        TopLevelRoute.all.forEach { route ->
+                            NavigationRailItem(
+                                selected = route == navigator.current,
+                                onClick = { navigator.select(route) },
+                                icon = { Icon(route.icon, contentDescription = route.label) },
+                                label = { Text(route.label) },
+                            )
+                        }
+                    }
+                    Box(Modifier.fillMaxSize()) {
+                        TopLevelNavDisplay(navigator) { route ->
+                            when (route) {
+                                TopLevelRoute.Devices -> DevicesScreen(
+                                    graph.devicesViewModel,
+                                    graph.wirelessAdb,
+                                    panes = devicesPanes
+                                )
+
+                                TopLevelRoute.Presets -> PresetsScreen(
+                                    graph.presetsViewModel,
+                                    fileDialogs,
+                                    panes = presetsPanes
+                                )
+
+                                TopLevelRoute.Settings -> SettingsScreen(
+                                    graph.settingsViewModel,
+                                    settingsDialogs
+                                )
+                            }
+                        }
+                        SnackbarHost(
+                            snackbar,
+                            Modifier.align(Alignment.BottomCenter).padding(16.dp)
                         )
                     }
                 }
-                Box(Modifier.fillMaxSize()) {
-                    TopLevelNavDisplay(navigator) { route ->
-                        when (route) {
-                            TopLevelRoute.Devices -> DevicesScreen(graph.devicesViewModel, graph.wirelessAdb, panes = devicesPanes)
-                            TopLevelRoute.Presets -> PresetsScreen(graph.presetsViewModel, fileDialogs, panes = presetsPanes)
-                            TopLevelRoute.Settings -> SettingsScreen(graph.settingsViewModel, settingsDialogs)
-                        }
-                    }
-                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
-                }
-            }
             }
         }
     }
