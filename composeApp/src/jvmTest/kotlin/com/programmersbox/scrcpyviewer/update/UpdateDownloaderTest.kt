@@ -57,6 +57,10 @@ class UpdateDownloaderTest {
                 ex.responseBody.use { it.write(payload) }
             }
         }
+        s.createContext("/missing") { ex ->
+            ex.sendResponseHeaders(404, -1)
+            ex.close()
+        }
         s.start()
         server = s
         return "http://127.0.0.1:${s.address.port}/f"
@@ -116,5 +120,15 @@ class UpdateDownloaderTest {
         dir.resolve("1.4.9").createDirectories().resolve("x.dmg").writeBytes(byteArrayOf(1))
         UpdateDownloader(dir).download(asset(url, sha(payload)), version) { _, _ -> }
         assertFalse(dir.resolve("1.4.9").exists())
+    }
+
+    @Test
+    fun `non-2xx response fails`() = runBlocking {
+        val url = serve().replace("/f", "/missing")
+        val e = assertFailsWith<UpdateException> {
+            UpdateDownloader(dir).download(asset(url, sha(payload)), version) { _, _ -> }
+        }
+        assertEquals("Download failed: HTTP 404", e.message)
+        assertEquals(emptyList(), leftovers())
     }
 }

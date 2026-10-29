@@ -2,6 +2,8 @@ package com.programmersbox.scrcpyviewer.update
 
 import com.programmersbox.scrcpyviewer.APP_VERSION
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
@@ -58,12 +60,14 @@ open class UpdateDownloader(
                 throw UpdateException("Download failed: HTTP ${response.statusCode()}")
             }
             val total = asset.size
+            val ctx = currentCoroutineContext()
             // runInterruptible interrupts the blocked read when the coroutine is cancelled.
             runInterruptible(Dispatchers.IO) {
                 var read = 0L
                 val buffer = ByteArray(CHUNK)
                 Files.newOutputStream(part).use { out ->
                     while (true) {
+                        ctx.ensureActive()
                         val n = input.read(buffer)
                         if (n < 0) break
                         out.write(buffer, 0, n)
