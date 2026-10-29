@@ -4,6 +4,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Base64
+import java.util.concurrent.TimeUnit
 
 /**
  * Everything the update helper needs. [pid] is the running app, which the helper waits on.
@@ -20,8 +21,13 @@ data class InstallRequest(
 /** Writes the per-OS helper script into [InstallRequest.updatesDir] and starts it detached from this JVM. */
 class UpdateInstaller(
     private val start: (List<String>) -> Unit = ::startDetached,
+    private val startAndWait: (List<String>) -> Int? = { runAndWait(it, WINDOWS_LAUNCH_TIMEOUT_SECONDS) },
     private val hasSetsid: Boolean = File("/usr/bin/setsid").canExecute(),
 ) {
+    /**
+     * On Windows this blocks (up to [WINDOWS_LAUNCH_TIMEOUT_SECONDS]) until WMI has created the helper, so call it
+     * off the main thread. It throws [UpdateException] when the helper didn't start; the app must not quit then.
+     */
     fun launch(r: InstallRequest) {
         val (name, text) = when (r.target.platform) {
             UpdatePlatform.MacArm64 -> "update.sh" to HelperScripts.mac(r)
@@ -39,16 +45,34 @@ class UpdateInstaller(
             script.toFile().setExecutable(true)
         }
         Files.deleteIfExists(r.updatesDir.resolve(LAST_ERROR))
-        val cmd = when (r.target.platform) {
-            UpdatePlatform.WindowsX64 -> windowsLaunchCommand(script)
-            else -> {
-                // Run through /bin/sh so a lost exec bit or a noexec mount can't stop the helper.
-                val sh = listOf("/bin/sh", "-c", "nohup /bin/sh ${shQuote(script.toString())} >/dev/null 2>&1 &")
-                if (r.target.platform == UpdatePlatform.LinuxX64 && hasSetsid) listOf("/usr/bin/setsid") + sh else sh
+        if (r.target.platform == UpdatePlatform.WindowsX64) {
+            // The launching PowerShell lives in the app's job object, so it must finish before the app quits.
+            when (val code = startAndWait(windowsLaunchCommand(script))) {
+                0 -> Unit
+                null -> throw UpdateException("Couldn't start the updater (timed out)")
+                else -> throw UpdateException("Couldn't start the updater (code $code)")
             }
+        } else {
+            // Run through /bin/sh so a lost exec bit or a noexec mount can't stop the helper.
+            val sh = listOf("/bin/sh", "-c", "nohup /bin/sh ${shQuote(script.toString())} >/dev/null 2>&1 &")
+            start(if (r.target.platform == UpdatePlatform.LinuxX64 && hasSetsid) listOf("/usr/bin/setsid") + sh else sh)
         }
-        start(cmd)
     }
+}
+
+private const val WINDOWS_LAUNCH_TIMEOUT_SECONDS = 20L
+
+/** Runs [cmd] with output discarded and returns its exit code, or null (after killing it) on timeout. */
+internal fun runAndWait(cmd: List<String>, timeoutSeconds: Long): Int? {
+    val process = ProcessBuilder(cmd)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+    if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+        process.destroyForcibly()
+        return null
+    }
+    return process.exitValue()
 }
 
 /**
@@ -57,7 +81,10 @@ class UpdateInstaller(
  * as `-EncodedCommand` (Base64 UTF-16LE) because Java's Windows argument quoting does not escape embedded `"`.
  */
 internal fun windowsLaunchCommand(script: Path): List<String> =
-    listOf("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(windowsLaunchScript(script)))
+    listOf(
+        "powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+        "-EncodedCommand", encodePowerShell(windowsLaunchScript(script)),
+    )
 
 /** The PowerShell that [windowsLaunchCommand] encodes. Windows paths cannot contain `"`, so it can wrap the path. */
 internal fun windowsLaunchScript(script: Path): String {
@@ -117,14 +144,22 @@ object HelperScripts {
             |${shKillAdb(r.bundledAdb)}
             |rc=1
             |canceled=0
+            |lost=0
             |if MNT=$(mktemp -d); then
             |  if hdiutil attach -nobrowse -readonly -mountpoint "${'$'}MNT" "${'$'}DMG"; then
             |    if user_can_swap; then
             |      ( ${macSwap("\"\$MNT/ScrcpyViewer.app\"", bundle, parent)} )
             |      rc=$?
-            |      [ "${'$'}rc" -eq 0 ] || echo "Swap as this user failed (exit ${'$'}rc); retrying as admin"
+            |      if [ "${'$'}rc" -ne 0 ] && [ ! -d "${'$'}APP" ]; then
+            |        # Both moving the new bundle in and restoring the old one failed. Don't retry: the admin
+            |        # swap would bail out and its cleanup would delete the kept new copy.
+            |        lost=1
+            |        echo "Swap as this user failed (exit ${'$'}rc) and the old bundle was not restored"
+            |      elif [ "${'$'}rc" -ne 0 ]; then
+            |        echo "Swap as this user failed (exit ${'$'}rc); retrying as admin"
+            |      fi
             |    fi
-            |    if [ "${'$'}rc" -ne 0 ]; then
+            |    if [ "${'$'}rc" -ne 0 ] && [ "${'$'}lost" -eq 0 ]; then
             |      # Copy out of the image as this user, then copy and swap as admin with fixed paths only.
             |      rm -rf "${'$'}STAGED"
             |      if ditto "${'$'}MNT/ScrcpyViewer.app" "${'$'}STAGED"; then
@@ -142,6 +177,8 @@ object HelperScripts {
             |
             |if [ "${'$'}rc" -eq 0 ]; then
             |  echo "Update installed"
+            |elif [ "${'$'}lost" -eq 1 ]; then
+            |  fail "Install failed and the old app could not be put back. It is at ${'$'}PARENT/.ScrcpyViewer.app.old."
             |elif [ "${'$'}canceled" -eq 1 ]; then
             |  fail "Install was canceled."
             |else

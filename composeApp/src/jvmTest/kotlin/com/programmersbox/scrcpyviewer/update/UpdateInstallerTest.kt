@@ -138,7 +138,10 @@ class UpdateInstallerTest {
         assertEquals(expected, windowsLaunchScript(script))
 
         val cmd = windowsLaunchCommand(script)
-        assertEquals(listOf("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"), cmd.dropLast(1))
+        assertEquals(
+            listOf("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand"),
+            cmd.dropLast(1),
+        )
         assertEquals(expected, String(Base64.getDecoder().decode(cmd.last()), Charsets.UTF_16LE))
     }
 
@@ -399,6 +402,33 @@ class UpdateInstallerTest {
     }
 
     @Test
+    fun macScriptSkipsAdminRetryWhenOldBundleWasNotRestored() {
+        val (request, app, stubs) = macFixture()
+        buildDmg(request)
+        addOsascriptStub(stubs)
+        // mv fails on its 2nd and 3rd calls: moving the new bundle in, then moving the old one back.
+        val count = shQuote(stubs.resolve("count").toString())
+        stubs.resolve("mv").writeText(
+            "#!/bin/sh\nn=$(cat $count 2>/dev/null || echo 0); n=$((n + 1)); echo \$n >$count\n" +
+                "case \$n in 2|3) exit 1 ;; esac\nexec /bin/mv \"\$@\"\n",
+        )
+        stubs.resolve("mv").toFile().setExecutable(true)
+
+        assertEquals(0, runMacScript(request, stubs))
+
+        val log = request.updatesDir.resolve("update.log").readText()
+        val parent = app.parent
+        assertFalse("stub osascript" in stubs.resolve("calls").readText(), log)
+        assertFalse(app.exists(), log)
+        assertEquals("old", parent.resolve(".ScrcpyViewer.app.old/Contents/version").readText(), log)
+        assertEquals("new", parent.resolve(".ScrcpyViewer.app.new/Contents/version").readText(), log)
+        assertEquals(
+            "Install failed and the old app could not be put back. It is at $parent/.ScrcpyViewer.app.old.\n",
+            request.updatesDir.resolve("last-error.txt").readText(),
+        )
+    }
+
+    @Test
     fun launchWritesScriptAndStartsDetached() {
         var captured: List<String>? = null
         val updates = dir.resolve("updates").createDirectories()
@@ -425,11 +455,36 @@ class UpdateInstallerTest {
         val updates = dir.resolve("updates").createDirectories()
         val request = windowsRequest.copy(updatesDir = updates)
 
-        UpdateInstaller(start = { captured = it }).launch(request)
+        UpdateInstaller(start = { error("Windows must wait") }, startAndWait = { captured = it; 0 }).launch(request)
 
         val script = updates.resolve("update.ps1")
         assertTrue(script.exists())
         assertEquals(windowsLaunchCommand(script), captured)
+    }
+
+    @Test
+    fun launchOnWindowsThrowsWhenWmiCreateFails() {
+        val request = windowsRequest.copy(updatesDir = dir.resolve("updates"))
+        val e = assertFailsWith<UpdateException> {
+            UpdateInstaller(start = {}, startAndWait = { 9 }).launch(request)
+        }
+        assertEquals("Couldn't start the updater (code 9)", e.message)
+    }
+
+    @Test
+    fun launchOnWindowsThrowsWhenLauncherTimesOut() {
+        val request = windowsRequest.copy(updatesDir = dir.resolve("updates"))
+        val e = assertFailsWith<UpdateException> {
+            UpdateInstaller(start = {}, startAndWait = { null }).launch(request)
+        }
+        assertEquals("Couldn't start the updater (timed out)", e.message)
+    }
+
+    @Test
+    fun runAndWaitReturnsExitCodeOrNullOnTimeout() {
+        assumeTrue("needs /bin/sh", hasSh)
+        assertEquals(3, runAndWait(listOf("/bin/sh", "-c", "exit 3"), 10))
+        assertEquals(null, runAndWait(listOf("/bin/sh", "-c", "sleep 5"), 1))
     }
 
     @Test
