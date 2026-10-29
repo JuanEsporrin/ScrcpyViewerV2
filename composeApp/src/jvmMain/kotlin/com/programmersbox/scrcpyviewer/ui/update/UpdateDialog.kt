@@ -30,7 +30,7 @@ import com.programmersbox.scrcpyviewer.update.UpdateState
 
 private const val BYTES_PER_MB = 1_000_000L
 
-internal val Release.versionLabel: String get() = version?.toString() ?: tagName
+internal val Release.versionLabel: String get() = version
 
 internal fun UpdateState.Downloading.progressText() = "Downloading… ${read / BYTES_PER_MB} of ${total / BYTES_PER_MB} MB"
 
@@ -122,6 +122,12 @@ private fun OfferDialog(
                 Modifier.fillMaxWidth().padding(top = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
+                // The release page, for notes that could not be fetched or are cut off above. Without self-update the
+                // main button already opens it.
+                if (ui.canSelfUpdate) {
+                    TextButton(onClick = { uriHandler.openSafely(ui.releasePageUrl) }) { Text("Release notes") }
+                    Spacer(Modifier.weight(1f))
+                }
                 TextButton(onClick = onLater) { Text("Later") }
                 Button(onClick = if (ui.canSelfUpdate) onUpdate else ({ uriHandler.openSafely(ui.releasePageUrl) })) {
                     Text(if (ui.canSelfUpdate) "Update now" else "Download from GitHub")

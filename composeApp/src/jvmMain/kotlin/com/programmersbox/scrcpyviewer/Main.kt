@@ -40,6 +40,7 @@ import com.programmersbox.scrcpyviewer.di.startAppKoin
 import com.programmersbox.scrcpyviewer.update.UpdateManager
 import com.programmersbox.scrcpyviewer.update.UpdateState
 import kotlinx.coroutines.flow.first
+import kotlin.system.exitProcess
 
 fun main() {
     AppIcon.installTaskbarIcon()
@@ -48,7 +49,8 @@ fun main() {
     val mirrorController = koin.get<MirrorController>()
     val adbClient = koin.get<AdbClient>()
     val updateManager = koin.get<UpdateManager>()
-    application {
+    // exitProcessOnExit = false so the update install below runs once the windows are gone.
+    application(exitProcessOnExit = false) {
         val settings by appSettings.settings.collectAsState()
         val mirrors by mirrorController.open.collectAsState()
         val shutdown = remember { AppShutdown(mirrorController, exit = ::exitApplication) }
@@ -59,7 +61,7 @@ fun main() {
         }
         LaunchedEffect(shutdownState) { shutdown.run() }
         LaunchedEffect(Unit) { updateManager.check(userInitiated = false) }
-        // The update helper waits for this process to exit before it installs.
+        // A downloaded update installs once the app has shut down (installPending below).
         LaunchedEffect(Unit) {
             updateManager.state.first { it is UpdateState.Installing }
             shutdown.request()
@@ -84,6 +86,10 @@ fun main() {
         }
         if (shuttingDown?.finishingRecording == true) FinishingRecordingWindow(settings.themeMode)
     }
+    // Sessions are closed and recordings finished. With a downloaded update, Nucleus starts its install script and
+    // exits the JVM here; otherwise (or if it could not start) the app exits normally.
+    updateManager.installPending()
+    exitProcess(0)
 }
 
 /** The main window's custom title bar: app icon on Windows (macOS and Linux show none), then the name. */

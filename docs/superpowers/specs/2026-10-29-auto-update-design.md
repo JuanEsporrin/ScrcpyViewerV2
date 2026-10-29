@@ -1,7 +1,11 @@
 # Auto-update — design
 
 Date: 2026-10-29
-Status: approved
+Status: approved; implementation superseded in 1.6.0
+
+> 1.6.0 replaced the hand-built release source, downloader and helper scripts below with the Nucleus updater and
+> packaging (see `docs/nucleus-migration-report.md` and `docs/nucleus-update-transition.md`). The UI, the popup
+> rules and the shutdown-then-install order described here still apply.
 
 ## Intent
 
