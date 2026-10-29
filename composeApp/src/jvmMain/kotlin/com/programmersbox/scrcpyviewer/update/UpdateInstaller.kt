@@ -3,6 +3,7 @@ package com.programmersbox.scrcpyviewer.update
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Base64
 
 /**
  * Everything the update helper needs. [pid] is the running app, which the helper waits on.
@@ -39,10 +40,7 @@ class UpdateInstaller(
         }
         Files.deleteIfExists(r.updatesDir.resolve(LAST_ERROR))
         val cmd = when (r.target.platform) {
-            UpdatePlatform.WindowsX64 -> listOf(
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                "-File", script.toString(),
-            )
+            UpdatePlatform.WindowsX64 -> windowsLaunchCommand(script)
             else -> {
                 // Run through /bin/sh so a lost exec bit or a noexec mount can't stop the helper.
                 val sh = listOf("/bin/sh", "-c", "nohup /bin/sh ${shQuote(script.toString())} >/dev/null 2>&1 &")
@@ -52,6 +50,24 @@ class UpdateInstaller(
         start(cmd)
     }
 }
+
+/**
+ * The jpackage launcher runs the JVM in a job object that kills its children when the app exits, so the
+ * helper is created by WMI (`Win32_Process.Create`) outside that job. The PowerShell that asks WMI is passed
+ * as `-EncodedCommand` (Base64 UTF-16LE) because Java's Windows argument quoting does not escape embedded `"`.
+ */
+internal fun windowsLaunchCommand(script: Path): List<String> =
+    listOf("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShell(windowsLaunchScript(script)))
+
+/** The PowerShell that [windowsLaunchCommand] encodes. Windows paths cannot contain `"`, so it can wrap the path. */
+internal fun windowsLaunchScript(script: Path): String {
+    val helper = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"$script\""
+    return "\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create " +
+        "-Arguments @{CommandLine=${psQuote(helper)}}; exit \$r.ReturnValue"
+}
+
+internal fun encodePowerShell(command: String): String =
+    Base64.getEncoder().encodeToString(command.toByteArray(Charsets.UTF_16LE))
 
 /** Starts [cmd] without waiting and without holding its output, so it outlives this JVM. */
 internal fun startDetached(cmd: List<String>) {
@@ -88,16 +104,27 @@ object HelperScripts {
             |
             |${shFunctions()}
             |
+            |# True when this user can rename the bundle aside and delete it afterwards: the folder is writable
+            |# and every item in the bundle is owned by this user, with writable directories. Otherwise a
+            |# root-owned bundle could be moved to .old and then fail to delete, blocking later updates.
+            |user_can_swap() {
+            |  [ -w "${'$'}PARENT" ] || return 1
+            |  blockers=$(find "${'$'}APP" \( ! -user "$(id -u)" -o \( -type d ! -perm -u+w \) \) -print) || return 1
+            |  [ -z "${'$'}blockers" ]
+            |}
+            |
             |${shWaitForPid(r.pid)}
             |${shKillAdb(r.bundledAdb)}
             |rc=1
             |canceled=0
             |if MNT=$(mktemp -d); then
             |  if hdiutil attach -nobrowse -readonly -mountpoint "${'$'}MNT" "${'$'}DMG"; then
-            |    if [ -w "${'$'}PARENT" ]; then
+            |    if user_can_swap; then
             |      ( ${macSwap("\"\$MNT/ScrcpyViewer.app\"", bundle, parent)} )
             |      rc=$?
-            |    else
+            |      [ "${'$'}rc" -eq 0 ] || echo "Swap as this user failed (exit ${'$'}rc); retrying as admin"
+            |    fi
+            |    if [ "${'$'}rc" -ne 0 ]; then
             |      # Copy out of the image as this user, then copy and swap as admin with fixed paths only.
             |      rm -rf "${'$'}STAGED"
             |      if ditto "${'$'}MNT/ScrcpyViewer.app" "${'$'}STAGED"; then
@@ -171,6 +198,7 @@ object HelperScripts {
             |${'$'}log = ${psQuote(r.updatesDir.resolve(UPDATE_LOG).toString())}
             |${'$'}errFile = ${psQuote(r.updatesDir.resolve(LAST_ERROR).toString())}
             |${'$'}msi = ${psQuote(r.installer.toString())}
+            |${'$'}msiLog = ${psQuote(r.updatesDir.resolve("msi.log").toString())}
             |${'$'}exe = ${psQuote(r.target.launcher.toString())}
             |
             |function Write-Log([string]${'$'}message) {
@@ -190,15 +218,18 @@ object HelperScripts {
             |}
             |$adb
             |try {
-            |    ${'$'}p = Start-Process msiexec -ArgumentList '/i', ('"' + ${'$'}msi + '"'), '/passive', '/norestart' -Verb RunAs -Wait -PassThru
+            |    ${'$'}p = Start-Process msiexec -ArgumentList '/i', ('"' + ${'$'}msi + '"'), '/passive', '/norestart', '/l*v', ('"' + ${'$'}msiLog + '"') -Verb RunAs -Wait -PassThru
             |    if (${'$'}p.ExitCode -eq 0 -or ${'$'}p.ExitCode -eq 3010) {
             |        Write-Log ('Update installed (exit ' + ${'$'}p.ExitCode + ')')
             |    } else {
-            |        Write-Failure ('Install failed (exit ' + ${'$'}p.ExitCode + '). See update.log.')
+            |        Write-Failure ('Install failed (exit ' + ${'$'}p.ExitCode + '). See update.log and msi.log.')
             |    }
             |} catch {
             |    Write-Log ('msiexec did not run: ' + ${'$'}_)
-            |    if ("${'$'}_" -match 'cancel') {
+            |    # 1223 is ERROR_CANCELLED (UAC prompt declined); the message text is localized.
+            |    ${'$'}code = ${'$'}_.Exception.NativeErrorCode
+            |    if (${'$'}null -ne ${'$'}_.Exception.InnerException) { ${'$'}code = ${'$'}_.Exception.InnerException.NativeErrorCode }
+            |    if (${'$'}code -eq 1223 -or "${'$'}_" -match 'cancel') {
             |        Write-Failure 'Install was canceled.'
             |    } else {
             |        Write-Failure 'Install failed. See update.log.'
@@ -217,7 +248,8 @@ object HelperScripts {
     /**
      * One sh command line that replaces [bundle] with a copy of [src] (an already quoted sh word).
      * It copies to a hidden sibling first and moves the old bundle aside only after the copy succeeds.
-     * If moving the new bundle in fails, the old one is moved back. Exits 0 on success, 1 otherwise.
+     * If moving the new bundle in fails, the old one is moved back (and the copy removed only once the old one
+     * is back). Exits 0 on success, 1 otherwise.
      * Runs either in a subshell or as root through [adminShellScript], so it uses only baked paths.
      */
     internal fun macSwap(src: String, bundle: Path, parent: Path): String {
@@ -225,7 +257,7 @@ object HelperScripts {
         val new = shQuote(parent.resolve(".ScrcpyViewer.app.new").toString())
         val old = shQuote(parent.resolve(".ScrcpyViewer.app.old").toString())
         return "test -d $app && rm -rf $new $old && ditto $src $new && mv $app $old && " +
-            "{ mv $new $app || { mv $old $app; exit 1; }; } && " +
+            "{ mv $new $app || { mv $old $app && rm -rf $new; exit 1; }; } && " +
             "{ rm -rf $old; xattr -dr com.apple.quarantine $app; exit 0; }; " +
             "rm -rf $new; exit 1"
     }

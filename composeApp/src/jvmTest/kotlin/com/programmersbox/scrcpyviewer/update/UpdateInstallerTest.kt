@@ -1,9 +1,11 @@
 package com.programmersbox.scrcpyviewer.update
 
+import org.junit.Assume.assumeTrue
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -23,6 +25,7 @@ class UpdateInstallerTest {
 
     @AfterTest
     fun cleanup() {
+        dir.toFile().walkTopDown().forEach { it.setWritable(true) }
         dir.toFile().deleteRecursively()
     }
 
@@ -115,9 +118,28 @@ class UpdateInstallerTest {
         val script = HelperScripts.windows(windowsRequest)
         assertTrue("'C:\\Program Files\\ScrcpyViewer\\ScrcpyViewer.exe'" in script, script)
         assertTrue("'C:\\Users\\Jane O''Doe\\AppData" in script, script)
-        for (part in listOf("/passive", "/norestart", "-Verb RunAs", "3010", "Wait-Process -Id 4242")) {
+        // The separator before msi.log is the host's, since updatesDir.resolve runs on the test host.
+        assertTrue(Regex("""\${'$'}msiLog = 'C:\\Users\\Jane O''Doe\\AppData\\Roaming\\ScrcpyViewer\\updates.msi\.log'""").containsMatchIn(script), script)
+        val parts = listOf(
+            "/passive", "/norestart", "'/l*v'", "-Verb RunAs", "3010", "Wait-Process -Id 4242",
+            "NativeErrorCode", "-eq 1223", "See update.log and msi.log.",
+        )
+        for (part in parts) {
             assertTrue(part in script, "missing $part in\n$script")
         }
+    }
+
+    @Test
+    fun windowsLaunchEscapesTheJobObjectThroughWmi() {
+        val script = Paths.get("C:\\Users\\Jane O'Doe\\AppData\\Roaming\\ScrcpyViewer\\updates\\update.ps1")
+        val expected = "\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments " +
+            "@{CommandLine='powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " +
+            "\"C:\\Users\\Jane O''Doe\\AppData\\Roaming\\ScrcpyViewer\\updates\\update.ps1\"'}; exit \$r.ReturnValue"
+        assertEquals(expected, windowsLaunchScript(script))
+
+        val cmd = windowsLaunchCommand(script)
+        assertEquals(listOf("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"), cmd.dropLast(1))
+        assertEquals(expected, String(Base64.getDecoder().decode(cmd.last()), Charsets.UTF_16LE))
     }
 
     @Test
@@ -141,7 +163,7 @@ class UpdateInstallerTest {
 
     @Test
     fun shScriptsPassSyntaxCheck() {
-        if (!hasSh) return
+        assumeTrue("needs /bin/sh", hasSh)
         val requests = listOf(
             "mac" to HelperScripts.mac(macRequest),
             "mac-adb" to HelperScripts.mac(macRequest.copy(bundledAdb = Paths.get("/a b/adb"))),
@@ -159,7 +181,7 @@ class UpdateInstallerTest {
 
     @Test
     fun shQuoteRoundTripsThroughSh() {
-        if (!hasSh) return
+        assumeTrue("needs /bin/sh", hasSh)
         val value = "/a b/Jane O'Doe/\"q\"/\$HOME/`x`/back\\slash"
         val process = ProcessBuilder("/bin/sh", "-c", "printf %s ${shQuote(value)}").start()
         assertTrue(process.waitFor(10, TimeUnit.SECONDS))
@@ -182,7 +204,7 @@ class UpdateInstallerTest {
 
     @Test
     fun appleScriptStringRoundTripsThroughOsascript() {
-        if (!File("/usr/bin/osascript").canExecute()) return
+        assumeTrue("needs osascript", File("/usr/bin/osascript").canExecute())
         val value = "/a b/Jane O'Doe/\"q\"/back\\slash"
         val cmd = "printf %s ${shQuote(value)}"
         // Same escaping as the admin path, minus the privilege prompt.
@@ -194,7 +216,7 @@ class UpdateInstallerTest {
 
     @Test
     fun macSwapReplacesBundle() {
-        if (!File("/usr/bin/ditto").canExecute()) return
+        assumeTrue("needs ditto", File("/usr/bin/ditto").canExecute())
         val parent = dir.resolve("Apps").createDirectories()
         val app = parent.resolve("ScrcpyViewer.app").createDirectories()
         app.resolve("version").writeText("old")
@@ -209,7 +231,7 @@ class UpdateInstallerTest {
 
     @Test
     fun macSwapFailureLeavesOldBundle() {
-        if (!File("/usr/bin/ditto").canExecute()) return
+        assumeTrue("needs ditto", File("/usr/bin/ditto").canExecute())
         val parent = dir.resolve("Apps").createDirectories()
         val app = parent.resolve("ScrcpyViewer.app").createDirectories()
         app.resolve("version").writeText("old")
@@ -220,16 +242,40 @@ class UpdateInstallerTest {
         assertFalse(parent.resolve(".ScrcpyViewer.app.old").exists())
     }
 
-    /** Lays out a writable install with an old bundle, a stub `open`, and a stub adb; null when hdiutil is unavailable. */
-    private fun macFixture(): Triple<InstallRequest, Path, Path>? {
-        if (!File("/usr/bin/hdiutil").canExecute()) return null
+    @Test
+    fun macSwapRestoresOldBundleWhenMoveInFails() {
+        assumeTrue("needs ditto", File("/usr/bin/ditto").canExecute())
+        val parent = dir.resolve("Apps q'").createDirectories()
+        val app = parent.resolve("ScrcpyViewer.app").createDirectories()
+        app.resolve("version").writeText("old")
+        val src = dir.resolve("mnt/ScrcpyViewer.app").createDirectories()
+        src.resolve("version").writeText("new")
+        val stubs = dir.resolve("stubs").createDirectories()
+        // mv fails on its 2nd call: moving the new bundle into place.
+        val count = shQuote(stubs.resolve("count").toString())
+        stubs.resolve("mv").writeText(
+            "#!/bin/sh\nn=$(cat $count 2>/dev/null || echo 0); n=$((n + 1)); echo \$n >$count\n" +
+                "[ \$n -eq 2 ] && exit 1\nexec /bin/mv \"\$@\"\n",
+        )
+        stubs.resolve("mv").toFile().setExecutable(true)
+
+        assertEquals(1, runSh(HelperScripts.macSwap(shQuote(src.toString()), app, parent), path = "$stubs:/usr/bin:/bin"))
+        assertEquals("3", stubs.resolve("count").readText().trim())
+        assertEquals("old", app.resolve("version").readText())
+        assertFalse(parent.resolve(".ScrcpyViewer.app.old").exists())
+        assertFalse(parent.resolve(".ScrcpyViewer.app.new").exists())
+    }
+
+    /** A writable install with an old bundle, plus stub `open` and adb that record their calls. Needs hdiutil. */
+    private fun macFixture(): Triple<InstallRequest, Path, Path> {
+        assumeTrue("needs hdiutil", File("/usr/bin/hdiutil").canExecute())
         val parent = dir.resolve("Apps x").createDirectories()
         val app = parent.resolve("ScrcpyViewer.app/Contents").createDirectories().parent
         app.resolve("Contents/version").writeText("old")
         val updates = dir.resolve("up d'q").createDirectories()
         val stubs = dir.resolve("stubs").createDirectories()
-        stubs.resolve("open").writeText("#!/bin/sh\necho \"stub open \$*\" >>'${stubs.resolve("calls")}'\n")
-        stubs.resolve("adb").writeText("#!/bin/sh\necho \"stub adb \$*\" >>'${stubs.resolve("calls")}'\n")
+        stubs.resolve("open").writeText(stub("open"))
+        stubs.resolve("adb").writeText(stub("adb"))
         stubs.toFile().listFiles()!!.forEach { it.setExecutable(true) }
         val request = InstallRequest(
             InstallTarget.Updatable(UpdatePlatform.MacArm64, app.resolve("Contents/MacOS/ScrcpyViewer"), app),
@@ -239,6 +285,33 @@ class UpdateInstallerTest {
             bundledAdb = stubs.resolve("adb"),
         )
         return Triple(request, app, stubs)
+    }
+
+    /** A stub that appends `stub <name> <args>` to the shared calls file, then runs [then]. */
+    private fun stub(name: String, then: String = "") =
+        "#!/bin/sh\necho \"stub $name \$*\" >>${shQuote(dir.resolve("stubs/calls").toString())}\n$then\n"
+
+    /**
+     * Stub osascript that runs the `do shell script` without the privilege prompt, so the admin path runs for
+     * real as this user.
+     */
+    private fun addOsascriptStub(stubs: Path) {
+        stubs.resolve("osascript").writeText(
+            "#!/bin/sh\necho \"stub osascript\" >>${shQuote(stubs.resolve("calls").toString())}\n" +
+                "exec /usr/bin/osascript -e \"\${2% with administrator privileges}\"\n",
+        )
+        stubs.resolve("osascript").toFile().setExecutable(true)
+    }
+
+    private fun buildDmg(request: InstallRequest) {
+        val src = dir.resolve("src/ScrcpyViewer.app/Contents").createDirectories()
+        src.resolve("version").writeText("new")
+        val create = ProcessBuilder(
+            "/usr/bin/hdiutil", "create", "-quiet", "-srcfolder", src.parent.parent.toString(),
+            "-volname", "SV", "-format", "UDRO", "-fs", "HFS+", request.installer.toString(),
+        ).redirectErrorStream(true).start()
+        create.inputStream.bufferedReader().readText()
+        assumeTrue("hdiutil create failed", create.waitFor(60, TimeUnit.SECONDS) && create.exitValue() == 0)
     }
 
     private fun runMacScript(request: InstallRequest, stubs: Path): Int {
@@ -253,15 +326,8 @@ class UpdateInstallerTest {
 
     @Test
     fun macScriptInstallsFromDiskImage() {
-        val (request, app, stubs) = macFixture() ?: return
-        val src = dir.resolve("src/ScrcpyViewer.app/Contents").createDirectories()
-        src.resolve("version").writeText("new")
-        val create = ProcessBuilder(
-            "/usr/bin/hdiutil", "create", "-quiet", "-srcfolder", src.parent.parent.toString(),
-            "-volname", "SV", "-format", "UDRO", "-fs", "HFS+", request.installer.toString(),
-        ).redirectErrorStream(true).start()
-        create.inputStream.bufferedReader().readText()
-        if (!create.waitFor(60, TimeUnit.SECONDS) || create.exitValue() != 0) return
+        val (request, app, stubs) = macFixture()
+        buildDmg(request)
 
         assertEquals(0, runMacScript(request, stubs))
 
@@ -276,7 +342,7 @@ class UpdateInstallerTest {
 
     @Test
     fun macScriptKeepsOldAppWhenDiskImageIsBad() {
-        val (request, app, stubs) = macFixture() ?: return
+        val (request, app, stubs) = macFixture()
         request.installer.writeText("not a disk image")
 
         assertEquals(0, runMacScript(request, stubs))
@@ -288,6 +354,48 @@ class UpdateInstallerTest {
             request.updatesDir.resolve("last-error.txt").readText(),
         )
         assertEquals("stub adb kill-server\nstub open $app\n", stubs.resolve("calls").readText())
+    }
+
+    @Test
+    fun macScriptRetriesAsAdminWhenUserSwapFails() {
+        val (request, app, stubs) = macFixture()
+        buildDmg(request)
+        addOsascriptStub(stubs)
+        // ditto fails on its 1st call (the user swap copying out of the image) and works afterwards.
+        val flag = shQuote(stubs.resolve("ditto-failed").toString())
+        stubs.resolve("ditto").writeText(
+            stub("ditto", "[ -e $flag ] || { touch $flag; exit 1; }\nexec /usr/bin/ditto \"\$@\""),
+        )
+        stubs.resolve("ditto").toFile().setExecutable(true)
+
+        assertEquals(0, runMacScript(request, stubs))
+
+        val log = request.updatesDir.resolve("update.log").readText()
+        assertTrue("retrying as admin" in log, log)
+        assertTrue("stub osascript" in stubs.resolve("calls").readText(), log)
+        assertEquals("new", app.resolve("Contents/version").readText(), log)
+        assertFalse(app.parent.resolve(".ScrcpyViewer.app.new").exists(), log)
+        assertFalse(app.parent.resolve(".ScrcpyViewer.app.old").exists(), log)
+        assertFalse(request.updatesDir.resolve("ScrcpyViewer.app.staged").exists(), log)
+        assertFalse(request.updatesDir.resolve("last-error.txt").exists(), log)
+    }
+
+    @Test
+    fun macScriptGoesStraightToAdminWhenBundleIsNotUserRemovable() {
+        val (request, app, stubs) = macFixture()
+        buildDmg(request)
+        addOsascriptStub(stubs)
+        // A read-only directory in the bundle stands in for root-owned contents the user could not delete.
+        app.resolve("Contents/locked").createDirectories().toFile().setWritable(false)
+
+        assertEquals(0, runMacScript(request, stubs))
+
+        val log = request.updatesDir.resolve("update.log").readText()
+        assertFalse("retrying as admin" in log, log)
+        assertTrue("stub osascript" in stubs.resolve("calls").readText(), log)
+        assertEquals("new", app.resolve("Contents/version").readText(), log)
+        assertFalse(app.parent.resolve(".ScrcpyViewer.app.old").exists(), log)
+        assertFalse(request.updatesDir.resolve("last-error.txt").exists(), log)
     }
 
     @Test
@@ -321,10 +429,7 @@ class UpdateInstallerTest {
 
         val script = updates.resolve("update.ps1")
         assertTrue(script.exists())
-        assertEquals(
-            listOf("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script.toString()),
-            captured,
-        )
+        assertEquals(windowsLaunchCommand(script), captured)
     }
 
     @Test
@@ -349,8 +454,10 @@ class UpdateInstallerTest {
         assertFailsWith<IllegalArgumentException> { UpdateInstaller(start = {}).launch(request) }
     }
 
-    private fun runSh(script: String): Int {
-        val process = ProcessBuilder("/bin/sh", "-c", script).redirectErrorStream(true).start()
+    private fun runSh(script: String, path: String? = null): Int {
+        val pb = ProcessBuilder("/bin/sh", "-c", script).redirectErrorStream(true)
+        if (path != null) pb.environment()["PATH"] = path
+        val process = pb.start()
         process.inputStream.bufferedReader().readText()
         assertTrue(process.waitFor(30, TimeUnit.SECONDS))
         return process.exitValue()
