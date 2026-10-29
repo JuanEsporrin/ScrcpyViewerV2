@@ -8,6 +8,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
@@ -47,6 +49,9 @@ import com.programmersbox.scrcpyviewer.ui.settings.AwtSettingsFileDialogs
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsScreen
 import com.programmersbox.scrcpyviewer.ui.settings.SettingsViewModel
 import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
+import com.programmersbox.scrcpyviewer.ui.update.UpdateDialog
+import com.programmersbox.scrcpyviewer.ui.update.UpdateViewModel
+import com.programmersbox.scrcpyviewer.update.UpdateState
 import kotlinx.coroutines.flow.filter
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
@@ -77,9 +82,11 @@ fun App(
     devicesViewModel: DevicesViewModel = koinViewModel(),
     presetsViewModel: PresetsViewModel = koinViewModel(),
     settingsViewModel: SettingsViewModel = koinViewModel(),
+    updateViewModel: UpdateViewModel = koinViewModel(),
     mirrorController: MirrorController = koinInject(),
     appSettings: AppSettings = koinInject(),
 ) {
+    val update by updateViewModel.state.collectAsState()
     // Read from the store, not the ViewModel's state, so the first frame already has the saved theme.
     val settings by appSettings.settings.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -100,7 +107,13 @@ fun App(
                             NavigationRailItem(
                                 selected = route == navigator.current,
                                 onClick = { navigator.select(route) },
-                                icon = { Icon(route.icon, contentDescription = route.label) },
+                                icon = {
+                                    if (route == TopLevelRoute.Settings && update.available != null) {
+                                        BadgedBox(badge = { Badge() }) { Icon(route.icon, contentDescription = route.label) }
+                                    } else {
+                                        Icon(route.icon, contentDescription = route.label)
+                                    }
+                                },
                                 label = { Text(route.label) },
                             )
                         }
@@ -121,7 +134,8 @@ fun App(
 
                                 TopLevelRoute.Settings -> SettingsScreen(
                                     settingsViewModel,
-                                    settingsDialogs
+                                    updateViewModel,
+                                    settingsDialogs,
                                 )
                             }
                         }
@@ -130,6 +144,16 @@ fun App(
                             Modifier.align(Alignment.BottomCenter).padding(16.dp)
                         )
                     }
+                }
+                // Downloading and Installing show it even after "Later", since the user started them.
+                val inProgress = update.state is UpdateState.Downloading || update.state is UpdateState.Installing
+                if ((update.showPopup && settings.onboardingSeen) || inProgress) {
+                    UpdateDialog(
+                        ui = update,
+                        onLater = updateViewModel::later,
+                        onUpdate = updateViewModel::update,
+                        onCancel = updateViewModel::cancel,
+                    )
                 }
                 if (!settings.onboardingSeen) {
                     // Leaves composition on close, so reopening from Settings starts at the first page.

@@ -6,6 +6,8 @@ import com.programmersbox.scrcpyviewer.adb.ProcessResult
 import com.programmersbox.scrcpyviewer.di.AppScope
 import com.programmersbox.scrcpyviewer.di.startAppKoin
 import com.programmersbox.scrcpyviewer.state.AppSettings
+import com.programmersbox.scrcpyviewer.update.FakeUpdateBackend
+import com.programmersbox.scrcpyviewer.update.UpdateBackend
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -44,10 +46,15 @@ class FakeAdbClient(private val payload: String = FAKE_DEVICES_PAYLOAD) : AdbCli
 
 /**
  * Starts the app's Koin graph on a fresh temp data dir with [FakeAdbClient], runs [block] once the fake devices are
- * listed, then stops it. The first-run guide is marked seen so it does not cover the app.
+ * listed, then stops it. The first-run guide is marked seen so it does not cover the app. The default
+ * [updateBackend] never answers a check, so no update check reaches the network.
  */
-fun withFakeAppKoin(dataDir: Path = Files.createTempDirectory("scrcpyviewer-test"), block: (Koin) -> Unit) {
-    val koin = startAppKoin(dataDir) { FakeAdbClient() }
+fun withFakeAppKoin(
+    dataDir: Path = Files.createTempDirectory("scrcpyviewer-test"),
+    updateBackend: UpdateBackend = FakeUpdateBackend(),
+    block: (Koin) -> Unit,
+) {
+    val koin = startAppKoin(dataDir, adbClientFactory = { FakeAdbClient() }, updateBackend = updateBackend)
     try {
         koin.get<AppSettings>().update { it.copy(onboardingSeen = true) }
         runBlocking { withTimeout(5_000) { koin.get<DeviceTracker>().devices.first { it.size == 3 } } }

@@ -1,0 +1,148 @@
+package com.programmersbox.scrcpyviewer.ui.update
+
+import androidx.compose.ui.platform.UriHandler
+import com.programmersbox.scrcpyviewer.update.FakeUpdateBackend
+import com.programmersbox.scrcpyviewer.update.UpdateManager
+import com.programmersbox.scrcpyviewer.update.UpdateState
+import dev.nucleusframework.updater.UpdateEvent
+import dev.nucleusframework.updater.UpdateLevel
+import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.exception.NoMatchingFileException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class UpdateViewModelTest {
+    private val managerScope = CoroutineScope(Job())
+    private val vmScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    @AfterTest
+    fun cleanup() {
+        managerScope.cancel()
+        vmScope.cancel()
+    }
+
+    private fun vm(
+        canInstall: Boolean = true,
+        macNotInApplications: Boolean = false,
+        event: UpdateEvent? = null,
+        currentVersion: String = "1.5.0",
+    ): UpdateViewModel {
+        val manager = UpdateManager(
+            backend = FakeUpdateBackend(canInstall = canInstall, event = event) { FakeUpdateBackend.available("1.6.0") },
+            scope = managerScope,
+            currentVersion = currentVersion,
+            bundledAdbInUse = { null },
+            macNotInApplications = macNotInApplications,
+            repo = "jakepurple13/ScrcpyViewerV2",
+        )
+        return UpdateViewModel(manager, vmScope)
+    }
+
+    private fun UpdateViewModel.checkAndAwaitAvailable(): UpdateUiState {
+        check()
+        return runBlocking { withTimeout(5_000) { state.first { it.state is UpdateState.Available } } }
+    }
+
+    @Test
+    fun `popup shows for a newer release and Later hides it`() {
+        val vm = vm()
+        assertFalse(vm.state.value.showPopup)
+        assertFalse(vm.state.value.canSelfUpdate, "nothing to update to yet")
+        val ui = vm.checkAndAwaitAvailable()
+        assertTrue(ui.showPopup)
+        assertEquals("1.6.0", ui.available?.version)
+        assertEquals("1.5.0", ui.currentVersion)
+        assertTrue(ui.canSelfUpdate)
+        vm.later()
+        // The manager emits on Dispatchers.Default, so wait for the dismissal instead of reading state.value at once.
+        val dismissed = runBlocking { withTimeout(5_000) { vm.state.first { !it.showPopup } } }
+        assertEquals("1.6.0", dismissed.available?.version)
+    }
+
+    @Test
+    fun `dev run or unsupported package offers GitHub instead`() {
+        val ui = vm(canInstall = false).checkAndAwaitAvailable()
+        assertTrue(ui.showPopup)
+        assertFalse(ui.canSelfUpdate)
+        assertFalse(ui.macNotInApplications)
+    }
+
+    @Test
+    fun `release with no file for this OS offers GitHub and shows its notes`() {
+        val manager = UpdateManager(
+            backend = FakeUpdateBackend(latest = { "1.6.0" }, notes = { "- Notes" }) {
+                UpdateResult.Error(NoMatchingFileException("Linux", "ARM64", "deb"))
+            },
+            scope = managerScope,
+            currentVersion = "1.5.0",
+            bundledAdbInUse = { null },
+            macNotInApplications = false,
+        )
+        val ui = UpdateViewModel(manager, vmScope).checkAndAwaitAvailable()
+        assertTrue(ui.showPopup)
+        assertFalse(ui.canSelfUpdate)
+        assertEquals("- Notes", ui.available?.body)
+    }
+
+    @Test
+    fun `mac outside Applications is flagged and cannot self update`() {
+        val vm = vm(macNotInApplications = true)
+        assertTrue(vm.state.value.macNotInApplications)
+        assertFalse(vm.checkAndAwaitAvailable().canSelfUpdate)
+    }
+
+    @Test
+    fun `previous failure reaches the ui state`() {
+        val event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR)
+        assertEquals("Updating to 1.6.0 did not complete.", vm(event = event).state.value.previousFailure)
+    }
+
+    @Test
+    fun `completed update reaches the ui state`() {
+        val event = UpdateEvent("1.5.0", "1.6.0", UpdateLevel.MINOR)
+        val ui = vm(event = event, currentVersion = "1.6.0").state.value
+        assertEquals("1.5.0", ui.updatedFrom)
+        assertEquals(null, ui.previousFailure)
+    }
+
+    @Test
+    fun `release page url is the release or the latest page`() {
+        val vm = vm()
+        assertEquals("https://github.com/jakepurple13/ScrcpyViewerV2/releases/latest", vm.state.value.releasePageUrl)
+        assertEquals(
+            "https://github.com/jakepurple13/ScrcpyViewerV2/releases/tag/v1.6.0",
+            vm.checkAndAwaitAvailable().releasePageUrl,
+        )
+    }
+
+    @Test
+    fun `openSafely swallows a failing uri handler`() {
+        val handler = object : UriHandler {
+            override fun openUri(uri: String) = error("no browser")
+        }
+        handler.openSafely("https://example.invalid")
+    }
+
+    @Test
+    fun `openSafely passes the url on`() {
+        val opened = mutableListOf<String>()
+        val handler = object : UriHandler {
+            override fun openUri(uri: String) {
+                opened += uri
+            }
+        }
+        handler.openSafely("https://example.invalid/a")
+        assertEquals(listOf("https://example.invalid/a"), opened)
+    }
+}

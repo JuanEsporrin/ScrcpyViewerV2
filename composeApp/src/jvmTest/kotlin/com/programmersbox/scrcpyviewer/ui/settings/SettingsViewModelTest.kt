@@ -138,4 +138,11 @@ class SettingsViewModelTest {
         assertEquals("1.0.39", parseAdbVersion("Android Debug Bridge version 1.0.39\n"))
         assertNull(parseAdbVersion("garbage"))
     }
+
+    @Test
+    fun `selection survives as view model state`() {
+        val nav = vm().apply { selectCategory(SettingsCategoryId.Help); setQuery("x") }.nav.value
+        assertEquals(SettingsCategoryId.Help, nav.selected)
+        assertEquals("x", nav.query)
+    }
 }

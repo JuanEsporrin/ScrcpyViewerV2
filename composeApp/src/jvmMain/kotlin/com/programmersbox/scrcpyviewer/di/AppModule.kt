@@ -20,6 +20,9 @@ import com.programmersbox.scrcpyviewer.ui.devices.DeviceSelection
 import com.programmersbox.scrcpyviewer.ui.devices.SelectedDevice
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorController
 import com.programmersbox.scrcpyviewer.ui.mirror.MirrorRequests
+import com.programmersbox.scrcpyviewer.update.NucleusUpdateBackend
+import com.programmersbox.scrcpyviewer.update.UpdateBackend
+import com.programmersbox.scrcpyviewer.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,7 +57,7 @@ fun interface AdbClientFactory {
 class AppScope : CoroutineScope by CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 /** Discovery root: the modules below, plus the `@KoinViewModel`s and `@Singleton`s under `ui`. */
-@Module(includes = [StorageModule::class, AdbModule::class, MirrorModule::class])
+@Module(includes = [StorageModule::class, AdbModule::class, MirrorModule::class, UpdateModule::class])
 @Configuration
 @ComponentScan("com.programmersbox.scrcpyviewer.ui")
 class AppModule
@@ -144,17 +147,50 @@ class MirrorModule {
     )
 }
 
+/** App updates, through Nucleus' updater ([UpdateBackend]). */
+@Module
+class UpdateModule {
+    /** Lives as long as the app: the popup, the badge and Settings share it, and `main()` quits on Installing. */
+    @Singleton
+    fun updateManager(
+        backend: UpdateBackend,
+        dataDir: DataDir,
+        scope: AppScope,
+        settings: AppSettings,
+        tools: BundledTools,
+    ): UpdateManager {
+        // 1.5.0's own updater downloaded installers and helper scripts here; Nucleus caches in "update-cache".
+        runCatching { dataDir.path.resolve(LEGACY_UPDATES_DIR).toFile().deleteRecursively() }
+        return UpdateManager(
+            backend = backend,
+            scope = scope,
+            // Stop the adb server before installing only when it is the app's own adb.
+            bundledAdbInUse = { if (settings.settings.value.adbPathOverride == null) tools.adbExecutable() else null },
+        )
+    }
+
+    private companion object {
+        const val LEGACY_UPDATES_DIR = "updates"
+    }
+}
+
+/** Where Nucleus keeps the last downloaded installer, the base for the next differential download. */
+private const val UPDATE_CACHE_DIR = "update-cache"
+
 /**
  * Starts the app's Koin graph and opens a mirror window for each [MirrorRequests] serial. Tests pass their own
- * [dataDir] and an [adbClientFactory] so no adb server or device is touched; they call `stopKoin()` when done.
+ * [dataDir], an [adbClientFactory] and an [updateBackend] so no adb server, device or network is touched; they call
+ * `stopKoin()` when done.
  */
 fun startAppKoin(
     dataDir: Path = AppDataDir.root(),
     adbClientFactory: AdbClientFactory = AdbClientFactory { AdbClient(adbPath = it) },
+    updateBackend: UpdateBackend = NucleusUpdateBackend(cacheDir = dataDir.resolve(UPDATE_CACHE_DIR)),
 ): Koin {
     val koin = startKoin<ScrcpyKoinApp> {
         koin.declare(DataDir(dataDir))
         koin.declare(adbClientFactory)
+        koin.declare(updateBackend)
     }.koin
     val mirrors = koin.get<MirrorController>()
     koin.get<AppScope>().launch { koin.get<MirrorRequests>().collect { mirrors.open(it) } }
