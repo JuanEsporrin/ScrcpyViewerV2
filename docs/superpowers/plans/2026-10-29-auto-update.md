@@ -5,7 +5,7 @@
 **Goal:** Check GitHub for a newer release on launch and on demand, show a popup, a Settings badge and a Settings
 section, and on "Update now" download, verify and swap in the new installer, then relaunch.
 
-**Architecture:** A pure `update` package handles release parsing, version compare, asset pick, install-target
+**Architecture:** Koin-wired (revised after PR #13): `UpdateManager` is an app-lifetime singleton in `UpdateModule`, and the UI goes through a `@KoinViewModel UpdateViewModel`. A pure `update` package handles release parsing, version compare, asset pick, install-target
 detection and helper-script generation. Thin I/O classes sit on top of it: GitHub fetch, download plus SHA-256, and
 detached script launch. `UpdateManager` exposes a `StateFlow` that drives a Compose dialog, the rail badge and a
 Settings section. The app quits through `AppShutdown`, and a detached per-OS script waits for the PID, installs, and
@@ -242,18 +242,22 @@ All paths below are relative to `composeApp/` unless they start with `docs/` or 
 - [ ] **Step 4:** Run the tests. Expected: PASS. Also run `sh -n` on the generated mac and linux scripts in a test (`ProcessBuilder("sh", "-n", file)` exit 0) to catch syntax errors.
 - [ ] **Step 5:** Commit `feat(update): per-OS helper scripts that swap and relaunch`.
 
-### Task 6: UpdateManager and app wiring
+### Task 6: UpdateManager and Koin wiring
+
+> Revised after main gained Koin (PR #13). `AppGraph` and `fakeAppGraph` no longer exist. The graph is `startAppKoin` in `main/di/AppModule.kt` (annotation-based Koin compiler plugin), and tests use `withFakeAppKoin` in `test/FakeAppKoin.kt`.
 
 **Files:**
 - Create: `main/update/UpdateManager.kt`
-- Modify: `main/Main.kt`:
-  - In `AppGraph`, add a constructor param `releaseSource: ReleaseSource = GitHubReleaseSource()` and the property `updateManager`.
-  - In `main()`, launch the check and watch for `Installing`.
-- Modify: `test/FakeAppGraph.kt` so `fakeAppGraph` passes a source that never returns (`ReleaseSource { awaitCancellation() }`).
+- Modify: `main/di/AppModule.kt`:
+  - Add `@Module class UpdateModule` and include it in `AppModule`'s `includes`.
+  - Add a `releaseSource: ReleaseSource = GitHubReleaseSource()` param to `startAppKoin` and `koin.declare(releaseSource)` it, the same way `AdbClientFactory` is declared.
+- Modify: `main/update/ReleaseSource.kt`: annotate `ReleaseSource` with `@org.koin.core.annotation.Provided`, like `AdbClientFactory`.
+- Modify: `main/Main.kt`: in `main()`, get `UpdateManager` from koin, launch the check, and watch for `Installing`.
+- Modify: `test/FakeAppKoin.kt`: add a `releaseSource: ReleaseSource = ReleaseSource { awaitCancellation() }` param to `withFakeAppKoin` and pass it to `startAppKoin`.
 - Test: `test/update/UpdateManagerTest.kt`
 
 **Interfaces:**
-- Consumes: Tasks 1–5.
+- Consumes: Tasks 1–5. From di: `AppScope`, `DataDir`, `AppSettings`, `BundledTools`.
 - Produces:
   - `sealed interface UpdateState`:
     - `data object Idle`
@@ -263,73 +267,104 @@ All paths below are relative to `composeApp/` unless they start with `docs/` or 
     - `data class Downloading(val release: Release, val read: Long, val total: Long)`
     - `data class Installing(val release: Release)`
     - `data class Failed(val message: String, val release: Release?)`
-  - `class UpdateManager(source: ReleaseSource, downloader: UpdateDownloader, installer: UpdateInstaller, val target: InstallTarget, updatesDir: Path, scope: CoroutineScope, currentVersion: String = APP_VERSION, platform: UpdatePlatform = UpdatePlatform.detect(), bundledAdbInUse: () -> Path?, now: () -> Instant = Instant::now)`
+  - `class UpdateManager(source: ReleaseSource, downloader: UpdateDownloader, installer: UpdateInstaller, val target: InstallTarget, updatesDir: Path, scope: CoroutineScope, val currentVersion: String = APP_VERSION, platform: UpdatePlatform = UpdatePlatform.detect(), bundledAdbInUse: () -> Path?, now: () -> Instant = Instant::now)`. It is a plain class, so the Koin annotations live on the module provider. It lives as long as the app, because the popup, the badge and Settings share it and `main()` needs it for shutdown.
     - `val state: StateFlow<UpdateState>`
-    - `val available: StateFlow<Release?>`: the newest known release newer than current. It survives `Checking`/`Failed` and drives the badge.
+    - `val available: StateFlow<Release?>`: the newest known release newer than current. It survives `Checking`/`Failed`.
     - `val lastChecked: StateFlow<Instant?>`
-    - `val popupVisible: StateFlow<Boolean>`: true when `available != null`, `dismissPopup()` wasn't called this launch, and state isn't `UpToDate`.
+    - `val popupDismissed: StateFlow<Boolean>`: set by `dismissPopup()`, for this launch only.
     - `val previousFailure: String?`: read and deleted from `updatesDir/last-error.txt` in `init`.
-    - `fun canSelfUpdate(release: Release): Boolean` = `target is InstallTarget.Updatable && release.assetFor(platform) != null`.
+    - `fun canSelfUpdate(release: Release): Boolean` = `target is InstallTarget.Updatable && release.assetFor(platform) != null`
     - `fun check(userInitiated: Boolean)`
       - Ignored while `Checking`, `Downloading` or `Installing`.
-      - Success: `Available` or `UpToDate`, and `lastChecked = now()`.
-      - Failure: when `userInitiated`, `Failed("Couldn't check for updates: ${e.message}", available.value)`. Otherwise, back to the previous state (or `Idle`), logged via `System.getLogger("scrcpyviewer.Update")`.
+      - Success gives `Available` or `UpToDate`, and sets `lastChecked = now()`.
+      - Failure with `userInitiated` gives `Failed("Couldn't check for updates: ${e.message}", available.value)`.
+      - Failure without it returns to the previous state (or `Idle`) and logs via `System.getLogger("scrcpyviewer.Update")`.
     - `fun startUpdate()`
-      - Only from `Available` or `Failed` with a release, and only when `canSelfUpdate`.
+      - Only from `Available`, or `Failed` with a release, and only when `canSelfUpdate`.
       - Downloads (emitting `Downloading`), calls `installer.launch(InstallRequest(…, pid = ProcessHandle.current().pid(), bundledAdb = bundledAdbInUse()))`, then sets `Installing`.
       - Errors give `Failed(e.message ?: "Update failed", release)`.
-    - `fun cancel()` cancels the download job and returns to `Available(release)`.
+    - `fun cancel()`: cancels the download job and returns to `Available(release)`.
     - `fun dismissPopup()`
-- Wiring:
-  - `AppGraph.updateManager`: use `UpdateDownloader(dataDir.resolve("updates"))` and `detectInstallTarget()`.
-  - Pass `bundledAdbInUse = { if (settings.settings.value.adbPathOverride == null) bundledTools.adbExecutable() else null }`.
-  - In `main()`:
-    - Add `LaunchedEffect(Unit) { graph.updateManager.check(userInitiated = false) }`.
-    - Add `LaunchedEffect(Unit) { graph.updateManager.state.first { it is UpdateState.Installing }; shutdown.request() }`.
+- `UpdateModule` provider (`@Singleton`):
+  - `updateManager(source: ReleaseSource, dataDir: DataDir, scope: AppScope, settings: AppSettings, tools: BundledTools): UpdateManager`
+    - Use `updatesDir = dataDir.path.resolve("updates")`, `UpdateDownloader(updatesDir)`, `UpdateInstaller()` and `detectInstallTarget()`.
+    - Pass `bundledAdbInUse = { if (settings.settings.value.adbPathOverride == null) tools.adbExecutable() else null }`.
+- `main()` additions inside `application {}`, after `shutdown` exists:
+  - `LaunchedEffect(Unit) { updateManager.check(userInitiated = false) }`
+  - `LaunchedEffect(Unit) { updateManager.state.first { it is UpdateState.Installing }; shutdown.request() }`
 
-- [ ] **Step 1: Write failing tests** with fake source/downloader/installer. Make `UpdateDownloader` open (or add a `download` lambda seam) so tests can fake it. `UpdateInstaller` takes the fake `start`. Use `runBlocking` and a `CoroutineScope(Job())`.
-  - `newer release becomes Available and popup visible`: current `1.4.0`, source `v1.5.0`.
-  - `same version is UpToDate and no popup`.
-  - `launch check failure is silent`: source throws `UpdateException("GitHub returned HTTP 403")`, `check(false)` gives `Idle`, `available == null`.
-  - `manual check failure shows message`: `check(true)` gives `Failed("Couldn't check for updates: GitHub returned HTTP 403", null)`.
-  - `check ignored while downloading`: the downloader suspends; call `check(true)` and a second `startUpdate()`; source call count stays 1 and the downloader call count stays 1.
-  - `cancel returns to Available`.
-  - `successful download launches installer and goes Installing`: the captured `InstallRequest.pid == ProcessHandle.current().pid()`.
-  - `checksum failure becomes Failed with release kept`: `available` is still non-null.
-  - `startUpdate refused when NotUpdatable`: target `NotUpdatable(DevBuild)` keeps the state `Available`.
-  - `dismissPopup hides popup but keeps available`.
-  - `previous failure read and deleted`: pre-write `last-error.txt`, then `previousFailure == content` and the file is gone.
+- [ ] **Step 1: Write failing tests.**
+  - Construct `UpdateManager` directly, with fake source and downloader (`UpdateDownloader` is `open`; override `download`) and an `UpdateInstaller` with a fake `start`.
+  - Use `runBlocking`, a `CoroutineScope(Job())` and a temp `updatesDir`.
+  - Test cases:
+    - `newer release becomes Available`: current `1.4.0`, source `v1.5.0`. Gives `available.value?.tagName == "v1.5.0"` and `popupDismissed == false`.
+    - `same version is UpToDate`: `available == null`.
+    - `launch check failure is silent`: the source throws `UpdateException("GitHub returned HTTP 403")`. `check(false)` gives `Idle`, `available == null`.
+    - `manual check failure shows message`: `check(true)` gives `Failed("Couldn't check for updates: GitHub returned HTTP 403", null)`.
+    - `check ignored while downloading`: the downloader suspends. Call `check(true)` and a second `startUpdate()`. The source call count stays 1, and so does the downloader call count.
+    - `cancel returns to Available`
+    - `successful download launches installer and goes Installing`: the captured `InstallRequest.pid == ProcessHandle.current().pid()`.
+    - `checksum failure becomes Failed with release kept`: `available` is still non-null.
+    - `startUpdate refused when NotUpdatable`: target `NotUpdatable(DevBuild)` keeps the state `Available`.
+    - `dismissPopup sets popupDismissed but keeps available`
+    - `previous failure read and deleted`: pre-write `last-error.txt`. Then `previousFailure == content` and the file is gone.
+  - Plus one Koin test in the same file: `withFakeAppKoin { koin -> koin.get<UpdateManager>() }` resolves, and its state stays `Idle` (the fake source never returns).
 - [ ] **Step 2:** Run `--tests '*UpdateManagerTest'`. Expected: FAIL.
 - [ ] **Step 3:** Implement and wire.
-- [ ] **Step 4:** Run the full `./gradlew :composeApp:jvmTest`. Expected: all PASS (existing ~443 plus new). This confirms `fakeAppGraph` makes no network call.
+- [ ] **Step 4:** Run the full `./gradlew :composeApp:jvmTest`. Expected: all PASS, which confirms no test hits the network.
 - [ ] **Step 5:** Commit `feat(update): update manager and launch check`.
 
-### Task 7: Update dialog and rail badge
+### Task 7: UpdateViewModel, update dialog and rail badge
 
 **Files:**
+- Create: `main/ui/update/UpdateViewModel.kt` (it sits under `ui`, so `@ComponentScan` picks up `@KoinViewModel`)
 - Create: `main/ui/update/UpdateDialog.kt`
-- Modify: `main/ui/App.kt`: wrap the Settings rail icon in `BadgedBox(badge = { Badge() })` when `available != null`. Show `UpdateDialog` when `popupVisible && settings.onboardingSeen` or state is `Downloading`/`Installing`.
-- Test: `test/ui/UpdateScreenshotTest.kt`
+- Modify: `main/ui/App.kt`:
+  - Add the param `updateViewModel: UpdateViewModel = koinViewModel()`.
+  - Badge the Settings rail icon (`BadgedBox(badge = { Badge() })`) when `ui.available != null`.
+  - Show `UpdateDialog` when `ui.showPopup && settings.onboardingSeen`, or when the state is `Downloading`/`Installing` because the user started it from the popup.
+- Test: `test/ui/update/UpdateViewModelTest.kt`, `test/ui/UpdateScreenshotTest.kt`
 
 **Interfaces:**
-- Consumes: `UpdateManager`, `UpdateState`, `Release`.
-- Produces: `@Composable fun UpdateDialog(state: UpdateState, release: Release, currentVersion: String, canSelfUpdate: Boolean, onLater: () -> Unit, onUpdate: () -> Unit, onOpenReleasePage: () -> Unit, onCancel: () -> Unit)`
-  - `Available`/`Failed` show the popup copy and the release `body` as plain text in a scrollable box (`heightIn(max = 110.dp)`, `surfaceContainerLowest` background, `shapes.medium`). `Failed` adds its message in `colorScheme.error`. The confirm button is "Update now", or "Download from GitHub" when `!canSelfUpdate`, which calls `onOpenReleasePage`.
-  - `Downloading` shows "Updating to {new}", "Downloading… {read MB} of {total MB} MB", a `LinearProgressIndicator`, the close/reopen note, and only "Cancel".
-  - `Installing` shows "Updating to {new}" with an indeterminate progress bar and no buttons.
-  - `onOpenReleasePage` uses `Desktop.getDesktop().browse(URI(release.htmlUrl))` from `App.kt`.
-  - The dialog isn't dismissable by clicking outside while `Downloading`/`Installing`.
+- Consumes: `UpdateManager`, `UpdateState`, `Release` (Task 6). The pattern is `SettingsViewModel`: `@KoinViewModel`, `scope: CoroutineScope = defaultViewModelScope()` as the last param, `ViewModel(scope)`.
+- Produces:
+  - `data class UpdateUiState(val state: UpdateState = UpdateState.Idle, val available: Release? = null, val currentVersion: String = "", val lastChecked: Instant? = null, val previousFailure: String? = null, val showPopup: Boolean = false, val canSelfUpdate: Boolean = false, val macNotInApplications: Boolean = false)`
+    - `showPopup` = `available != null && !popupDismissed && state !is UpToDate`
+    - `canSelfUpdate` = `available?.let(manager::canSelfUpdate) ?: false`
+    - `macNotInApplications` = `manager.target == InstallTarget.NotUpdatable(MacNotInApplications)`
+  - `@KoinViewModel class UpdateViewModel(private val manager: UpdateManager, private val openUri: (URI) -> Unit = ::browse, scope: CoroutineScope = defaultViewModelScope()) : ViewModel(scope)`
+    - `browse` is a private top-level function: `Desktop.getDesktop().browse(uri)`, guarded by `Desktop.isDesktopSupported()`.
+    - If Koin's compiler plugin rejects a function-typed default param, fall back to an `fun interface UriOpener` with a default instance.
+    - `val state: StateFlow<UpdateUiState>` (`stateIn(viewModelScope, SharingStarted.Eagerly, …)`)
+    - `fun check() = manager.check(userInitiated = true)`
+    - `fun update() = manager.startUpdate()`
+    - `fun cancel() = manager.cancel()`
+    - `fun later() = manager.dismissPopup()`
+    - `fun openReleasePage()` opens `URI(available.htmlUrl)`.
+    - Throttle the download progress shown in `state` (e.g. `sample(100)` on `Downloading` emissions, or emit only on whole-percent changes). The downloader calls back per 64 KiB chunk.
+  - `@Composable fun UpdateDialog(ui: UpdateUiState, onLater: () -> Unit, onUpdate: () -> Unit, onOpenReleasePage: () -> Unit, onCancel: () -> Unit)`
+    - `Available`/`Failed` (it uses `ui.available` for the release) show the popup copy and the release `body` as plain text in a scrollable box (`heightIn(max = 110.dp)`, `surfaceContainerLowest` background, `shapes.medium`).
+    - `Failed` adds its message in `colorScheme.error`.
+    - The confirm button is "Update now", or "Download from GitHub" when `!ui.canSelfUpdate`, which calls `onOpenReleasePage`.
+    - `Downloading` shows "Updating to {new}", "Downloading… {read MB} of {total MB} MB", a `LinearProgressIndicator`, the close/reopen note, and only "Cancel".
+    - `Installing` shows "Updating to {new}" with an indeterminate bar and no buttons.
+    - It can't be dismissed by clicking outside while `Downloading`/`Installing`.
 
-- [ ] **Step 1: Write screenshot tests** in `OnboardingScreenshotTest` style, rendering `App(graph)` with `UpdateDialog` on top, light theme:
-  - `update-available.png`
-  - `update-downloading.png` (read 31 MB, total 50 MB)
-  - `update-failed.png`
-  - `update-no-self-update.png` (`canSelfUpdate = false`)
-  - `rail-badge.png`: an `App(graph)` whose fake source returns `v9.9.9`. Trigger `graph.updateManager.check(false)`, wait for `Available`, and render without the dialog: call `dismissPopup()` first.
-  - Each asserts file size > 10_000.
-- [ ] **Step 2:** Run `./gradlew :composeApp:jvmTest -Pscreenshots --tests '*UpdateScreenshotTest'`. Expected: FAIL (compile).
-- [ ] **Step 3:** Implement the dialog and the App changes.
-- [ ] **Step 4:** Run the tests. Expected: PASS. Open the PNGs in `composeApp/build/screenshots/` and compare them to the approved mockup (`.superpowers/brainstorm/29604-1793289686/content/update-flow.html`, panels 1–2).
+- [ ] **Step 1: Write failing tests**
+  - `UpdateViewModelTest`: build an `UpdateManager` with fakes (as in `UpdateManagerTest`), then the VM with a test scope. Check:
+    - `showPopup` true after a newer release, false after `later()`.
+    - `canSelfUpdate` false for a `NotUpdatable(DevBuild)` target.
+    - `openReleasePage` calls `openUri` with `html_url`.
+  - `UpdateScreenshotTest`: follow the `OnboardingScreenshotTest` style (`withFakeAppKoin { … }`, `App()` plus `ScrcpyViewerTheme { UpdateDialog(…) }` in a `Box`), light theme. Files:
+    - `update-available.png`
+    - `update-downloading.png` (31 MB of 50 MB)
+    - `update-failed.png`
+    - `update-no-self-update.png`
+    - `rail-badge.png`: `withFakeAppKoin(releaseSource = { release v9.9.9 })`. Call `koin.get<UpdateManager>().check(false)`, wait for `Available`, call `dismissPopup()`, and render `App()`.
+    - Each asserts size > 10_000.
+- [ ] **Step 2:** Run `--tests '*UpdateViewModelTest'` and `-Pscreenshots --tests '*UpdateScreenshotTest'`. Expected: FAIL (compile).
+- [ ] **Step 3:** Implement the ViewModel, the dialog and the App changes.
+- [ ] **Step 4:** Run the tests. Expected: PASS. Open the PNGs in `composeApp/build/screenshots/` and compare them to the approved mockup (`.superpowers/brainstorm/29604-1793289686/content/update-flow.html`, panels 1–2). Run the full `jvmTest`.
 - [ ] **Step 5:** Commit `feat(update): update popup and Settings badge`.
 
 ### Task 8: Settings "Updates" section
@@ -339,33 +374,36 @@ All paths below are relative to `composeApp/` unless they start with `docs/` or 
 - Modify: `main/ui/settings/SettingsScreen.kt`:
   - Add the param `updates: @Composable () -> Unit = {}` to `SettingsContent` and render it first under the "Settings" title.
   - Make `Section` `internal`.
-  - `SettingsScreen` gets a new `updateManager: UpdateManager?` param (default `null`) and passes `{ UpdatesSection(updateManager) }` when non-null.
-- Modify: `main/ui/App.kt` to pass `graph.updateManager` to `SettingsScreen`.
-- Test: extend `test/ui/SettingsScreenshotTest.kt`.
+  - `SettingsScreen` gets a new param `updateViewModel: UpdateViewModel? = null` and passes `{ UpdatesSection(updateViewModel) }` when non-null.
+- Modify: `main/ui/App.kt`: pass `updateViewModel` to `SettingsScreen`.
+- Test: extend `test/ui/SettingsScreenshotTest.kt`, and add `test/ui/update/UpdatesSectionTest.kt`.
 
 **Interfaces:**
-- Consumes: `UpdateManager`, `Section`.
+- Consumes: `UpdateViewModel`, `UpdateUiState` (Task 7), `Section`.
 - Produces:
-  - `@Composable fun UpdatesSection(manager: UpdateManager)`: collects state and delegates.
-  - `@Composable fun UpdatesContent(state: UpdateState, available: Release?, currentVersion: String, lastChecked: Instant?, previousFailure: String?, target: InstallTarget, canSelfUpdate: Boolean, onCheck: () -> Unit, onUpdate: () -> Unit, onOpenReleasePage: () -> Unit, onCancel: () -> Unit)` renders:
+  - `@Composable fun UpdatesSection(viewModel: UpdateViewModel)`: collects `state` and delegates.
+  - `@Composable fun UpdatesContent(ui: UpdateUiState, onCheck: () -> Unit, onUpdate: () -> Unit, onOpenReleasePage: () -> Unit, onCancel: () -> Unit, now: Instant = Instant.now())` renders:
     - The `Section("Updates")` title and "Current version {current}".
-    - If `available != null`, a `Surface(surfaceContainer, shapes.medium)` card:
+    - If `ui.available != null`, a `Surface(surfaceContainer, shapes.medium)` card:
       - "Version {new} available", the date from `publishedAt` (`MMM d, yyyy`), and a "View release notes" `TextButton`.
-      - "Update now" (`Button`), or "Download from GitHub" when `!canSelfUpdate`.
-      - While `Downloading`, the card shows the progress bar and "Cancel" inline (builder choice made: inline).
-    - If `target` is `NotUpdatable(MacNotInApplications)`, the macOS hint in `bodySmall` `onSurfaceVariant`.
-    - An `OutlinedButton("Check for updates")`, disabled while `Checking`/`Downloading`/`Installing`, with a small `CircularProgressIndicator` while `Checking`. Next to it, "Last checked {relative}". Relative means "just now" under 1 min, "{n} min ago", or "{n} h ago".
+      - "Update now" (`Button`), or "Download from GitHub" when `!ui.canSelfUpdate`.
+      - While `Downloading`, the card shows the progress bar and "Cancel" inline.
+    - When `ui.macNotInApplications`, the macOS hint in `bodySmall` `onSurfaceVariant`.
+    - An `OutlinedButton("Check for updates")`, disabled while `Checking`/`Downloading`/`Installing`, with a small `CircularProgressIndicator` while `Checking`. Next to it, "Last checked {relative}".
     - `UpToDate` shows "You're on the latest version."
-    - `Failed` or `previousFailure` shows the message in `colorScheme.error`.
+    - `Failed` or `ui.previousFailure` shows the message in `colorScheme.error`.
+  - `internal fun lastCheckedText(lastChecked: Instant, now: Instant): String` gives "just now" under 1 min, "{n} min ago" under 1 h, and "{n} h ago" otherwise.
 
-- [ ] **Step 1: Write screenshot tests** rendering `SettingsContent(…, updates = { UpdatesContent(…) })`:
-  - `settings-updates-available.png`
-  - `settings-updates-uptodate.png`
-  - `settings-updates-error.png` (`Failed("Couldn't check for updates: GitHub returned HTTP 403", null)`)
-  - `settings-updates-mac-hint.png`
-- [ ] **Step 2:** Run with `-Pscreenshots --tests '*SettingsScreenshotTest'`. Expected: FAIL.
+- [ ] **Step 1: Write failing tests**
+  - `UpdatesSectionTest`: 30 s gives "just now", 5 min gives "5 min ago", 2 h gives "2 h ago".
+  - Screenshot tests rendering `SettingsContent(…, updates = { UpdatesContent(…) })`:
+    - `settings-updates-available.png`
+    - `settings-updates-uptodate.png`
+    - `settings-updates-error.png` (`Failed("Couldn't check for updates: GitHub returned HTTP 403", null)`)
+    - `settings-updates-mac-hint.png`
+- [ ] **Step 2:** Run `--tests '*UpdatesSectionTest'` and `-Pscreenshots --tests '*SettingsScreenshotTest'`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run the tests. Expected: PASS, and existing settings screenshots are still produced. Compare to mockup panel 3.
+- [ ] **Step 4:** Run the tests. Expected: PASS, and existing settings screenshots are still produced. Compare to mockup panel 3. Run the full `jvmTest`.
 - [ ] **Step 5:** Commit `feat(update): Updates section in Settings`.
 
 ### Task 9: Pin the MSI upgrade code and bump to 1.5.0

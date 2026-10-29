@@ -160,8 +160,8 @@ Process launch must be detached so the helper survives the JVM exit: `nohup … 
 - `update/UpdateDownloader.kt`: download with progress, SHA-256 verify.
 - `update/UpdateInstaller.kt`: writes and launches the per-OS helper script (script templates as resources or strings).
 - `update/UpdateManager.kt`: `StateFlow<UpdateState>` (`Idle`, `Checking`, `UpToDate`, `Available(release)`,
-  `Downloading(progress)`, `ReadyToInstall`, `Error(msg)`). Created in `Main.kt` alongside `SettingsViewModel`, it
-  drives the dialog, the badge and the Settings section.
+  `Downloading(progress)`, `ReadyToInstall`, `Error(msg)`). An app-lifetime Koin `@Singleton` (`UpdateModule` in `di/AppModule.kt`).
+  A `@KoinViewModel UpdateViewModel` in `ui/update/` wraps it, and the dialog, the badge and the Settings section read from that.
 - `ui/update/UpdateDialog.kt`, plus edits to `ui/App.kt` (dialog + badge), `ui/settings/SettingsScreen.kt` (section).
 
 Follow existing patterns: `AppShutdown` for quitting, `AppDataDir` for paths, `Os` for platform, Compose screenshot
