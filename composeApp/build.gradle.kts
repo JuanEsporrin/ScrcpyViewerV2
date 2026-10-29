@@ -116,7 +116,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "ScrcpyViewer"
-            modules("java.instrument", "java.management", "jdk.unsupported")
+            modules("java.instrument", "java.management", "jdk.unsupported", "java.net.http")
             packageVersion = appVersion
             appResourcesRootDir.set(layout.projectDirectory.dir("bundled"))
             macOS {
