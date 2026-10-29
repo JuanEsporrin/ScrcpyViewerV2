@@ -5,6 +5,7 @@ import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -16,6 +17,8 @@ data class Settings(
     val captureDir: String = defaultCaptureDir(),
     /** Whether new windows use the OS title bar; null = OS default. */
     val useSystemTitleBar: Boolean? = null,
+    /** False until the first-run guide is finished or skipped. True when absent, so upgrades from older files skip it. */
+    val onboardingSeen: Boolean = true,
 )
 
 internal fun defaultCaptureDir(): String {
@@ -27,7 +30,10 @@ internal fun defaultCaptureDir(): String {
 class AppSettings(file: Path) {
     private val store = JsonFile(file, Settings.serializer()) { Settings() }
     private val lock = Any()
-    private val _settings = MutableStateFlow(store.load())
+    // No file yet means a first launch: show the guide. Not persisted until the guide closes.
+    private val _settings = MutableStateFlow(
+        if (Files.exists(file)) store.load() else store.load().copy(onboardingSeen = false),
+    )
 
     val settings: StateFlow<Settings> get() = _settings
 

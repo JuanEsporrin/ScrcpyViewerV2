@@ -21,7 +21,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -35,6 +37,7 @@ import com.programmersbox.scrcpyviewer.ui.mirror.recordResultMessage
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavDisplay
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelNavigator
 import com.programmersbox.scrcpyviewer.ui.navigation.TopLevelRoute
+import com.programmersbox.scrcpyviewer.ui.onboarding.OnboardingDialog
 import com.programmersbox.scrcpyviewer.ui.presets.AwtPresetFileDialogs
 import com.programmersbox.scrcpyviewer.ui.presets.PresetsScreen
 import com.programmersbox.scrcpyviewer.ui.settings.AwtSettingsFileDialogs
@@ -117,6 +120,15 @@ fun App(
                             Modifier.align(Alignment.BottomCenter).padding(16.dp)
                         )
                     }
+                }
+                if (!settings.onboardingSeen) {
+                    // Leaves composition on close, so reopening from Settings starts at the first page.
+                    var page by remember { mutableIntStateOf(0) }
+                    OnboardingDialog(
+                        page = page,
+                        onPage = { page = it },
+                        onFinish = { graph.settings.update { it.copy(onboardingSeen = true) } },
+                    )
                 }
             }
         }

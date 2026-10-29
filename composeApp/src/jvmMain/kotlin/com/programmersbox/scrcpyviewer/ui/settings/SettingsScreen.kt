@@ -54,6 +54,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, files: SettingsFileDialogs, mod
         onUseCustomAdb = viewModel::useCustomAdb,
         onBrowseAdb = { files.chooseAdbFile()?.let { viewModel.useCustomAdb(it.toString()) } },
         onBrowseCaptureDir = { files.chooseFolder(Paths.get(state.settings.captureDir))?.let { viewModel.setCaptureDir(it.toString()) } },
+        onShowOnboarding = viewModel::showOnboarding,
         modifier = modifier,
     )
 }
@@ -68,6 +69,7 @@ fun SettingsContent(
     onUseCustomAdb: (String) -> Unit,
     onBrowseAdb: () -> Unit,
     onBrowseCaptureDir: () -> Unit,
+    onShowOnboarding: () -> Unit = {},
     modifier: Modifier = Modifier,
     isLinux: Boolean = Os.isLinux,
     customTitleBarSupported: Boolean = com.programmersbox.scrcpyviewer.ui.window.customTitleBarSupported,
@@ -132,6 +134,9 @@ fun SettingsContent(
                     )
                     OutlinedButton(onClick = onBrowseCaptureDir) { Text("Choose…") }
                 }
+            }
+            Section("Welcome guide", "Setup steps for USB debugging, Wi-Fi and mirroring.") {
+                OutlinedButton(onClick = onShowOnboarding) { Text("Show welcome guide") }
             }
         }
     }

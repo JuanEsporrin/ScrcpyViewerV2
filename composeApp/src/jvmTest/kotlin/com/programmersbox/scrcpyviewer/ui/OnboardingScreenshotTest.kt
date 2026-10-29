@@ -1,0 +1,44 @@
+package com.programmersbox.scrcpyviewer.ui
+
+import androidx.compose.foundation.layout.Box
+import com.programmersbox.scrcpyviewer.fakeAppGraph
+import com.programmersbox.scrcpyviewer.ui.onboarding.ONBOARDING_PAGE_COUNT
+import com.programmersbox.scrcpyviewer.ui.onboarding.OnboardingDialog
+import com.programmersbox.scrcpyviewer.ui.theme.ScrcpyViewerTheme
+import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.nio.file.Files
+import java.nio.file.Paths
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+/** Excluded from the default `jvmTest` run; run with `./gradlew :composeApp:jvmTest -Pscreenshots`. */
+class OnboardingScreenshotTest {
+    private val outDir = Paths.get(System.getProperty("user.dir")).resolve("build/screenshots")
+
+    private fun render(mode: ThemeMode) {
+        val graph = fakeAppGraph()
+        runBlocking { withTimeout(5_000) { graph.deviceTracker.devices.first { it.size == 3 } } }
+        graph.settings.update { it.copy(themeMode = mode) }
+        repeat(ONBOARDING_PAGE_COUNT) { page ->
+            val name = "onboarding-${mode.name.lowercase()}-${page + 1}.png"
+            val out = outDir.resolve(name)
+            renderToPng(1280, 800, out, settleMillis = 500) {
+                Box {
+                    App(graph)
+                    ScrcpyViewerTheme(mode) { OnboardingDialog(page, {}, {}) }
+                }
+            }
+            assertTrue(Files.size(out) > 10_000, "$name should not be blank")
+        }
+        graph.scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+    }
+
+    @Test
+    fun `onboarding light`() = render(ThemeMode.Light)
+
+    @Test
+    fun `onboarding dark`() = render(ThemeMode.Dark)
+}

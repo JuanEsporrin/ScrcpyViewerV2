@@ -4,6 +4,7 @@ import com.programmersbox.scrcpyviewer.ui.theme.ThemeMode
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -20,7 +21,8 @@ class AppSettingsTest {
         assertEquals(defaultCaptureDir(), missing.captureDir)
 
         AppSettings(file).update { it.copy(themeMode = ThemeMode.Dark, adbPathOverride = "/opt/adb", captureDir = "/tmp/cap") }
-        assertEquals(Settings(ThemeMode.Dark, "/opt/adb", "/tmp/cap"), AppSettings(file).settings.value)
+        // Saved on a first launch, before the guide was closed.
+        assertEquals(Settings(ThemeMode.Dark, "/opt/adb", "/tmp/cap", onboardingSeen = false), AppSettings(file).settings.value)
 
         Files.writeString(file, "{garbage")
         assertEquals(Settings(), AppSettings(file).settings.value)
@@ -45,5 +47,18 @@ class AppSettingsTest {
     fun `useSystemTitleBar persists`() {
         AppSettings(file).update { it.copy(useSystemTitleBar = true) }
         assertEquals(true, AppSettings(file).settings.value.useSystemTitleBar)
+    }
+
+    @Test
+    fun `onboarding shows on first launch and stays seen once closed`() {
+        assertFalse(AppSettings(file).settings.value.onboardingSeen)
+        AppSettings(file).update { it.copy(onboardingSeen = true) }
+        assertTrue(AppSettings(file).settings.value.onboardingSeen)
+    }
+
+    @Test
+    fun `onboarding absent from older file counts as seen`() {
+        Files.writeString(file, """{"themeMode":"Light"}""")
+        assertTrue(AppSettings(file).settings.value.onboardingSeen)
     }
 }
