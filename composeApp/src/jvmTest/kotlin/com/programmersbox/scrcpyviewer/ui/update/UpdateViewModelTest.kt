@@ -65,8 +65,9 @@ class UpdateViewModelTest {
         assertEquals("1.5.0", ui.currentVersion)
         assertTrue(ui.canSelfUpdate)
         vm.later()
-        assertFalse(vm.state.value.showPopup)
-        assertEquals("1.6.0", vm.state.value.available?.version)
+        // The manager emits on Dispatchers.Default, so wait for the dismissal instead of reading state.value at once.
+        val dismissed = runBlocking { withTimeout(5_000) { vm.state.first { !it.showPopup } } }
+        assertEquals("1.6.0", dismissed.available?.version)
     }
 
     @Test
