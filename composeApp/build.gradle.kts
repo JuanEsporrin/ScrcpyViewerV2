@@ -12,7 +12,7 @@ plugins {
 }
 
 // Single source of truth: feeds packageVersion and the generated APP_VERSION constant shown in the window title.
-val appVersion = "1.4.0"
+val appVersion = "1.5.0"
 
 val generateAppVersion = tasks.register("generateAppVersion") {
     val version = appVersion
@@ -135,7 +135,11 @@ compose.desktop {
                     """.trimIndent()
                 }
             }
-            windows { iconFile.set(project.file("icons/icon.ico")) }
+            windows {
+                iconFile.set(project.file("icons/icon.ico"))
+                // Never change: MSI upgrades replace the install in place only while this matches.
+                upgradeUuid = "5A4366BB-0831-3135-9B79-0A0955635DB7"
+            }
             // Debian package names must be lowercase.
             linux {
                 packageName = "scrcpyviewer"
